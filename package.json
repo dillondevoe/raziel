@@ -1,0 +1,10 @@
+{
+  "name": "raziel",
+  "version": "0.0.1",
+  "description": "Raziel — a terminal-first AI agent harness. One engine, ACP surfaces, event-sourced sessions.",
+  "license": "MIT",
+  "type": "module",
+  "bin": { "raziel": "src/cli.ts" },
+  "scripts": { "start": "bun run src/cli.ts", "test": "bun test" },
+  "dependencies": { "@anthropic-ai/sdk": "^0.122.0" }
+}
