@@ -16,6 +16,11 @@ export type EngineEvent = SessionEvent | { type: "assistant_delta"; turn: string
 type Body<T extends SessionEvent["type"]> =
   Omit<Extract<SessionEvent, { type: T }>, "id" | "ts" | "type">;
 
-export function mkEvent<T extends SessionEvent["type"]>(type: T, fields: Body<T>): SessionEvent {
-  return { type, id: crypto.randomUUID(), ts: new Date().toISOString(), ...fields } as SessionEvent;
+export function mkEvent<T extends SessionEvent["type"]>(
+  type: T,
+  fields: Body<T>,
+): Extract<SessionEvent, { type: T }> {
+  // Boundary cast: constructing a discriminated-union variant over a generic
+  // discriminant is not provable by TS; fields are still compile-checked via Body<T>.
+  return { type, id: crypto.randomUUID(), ts: new Date().toISOString(), ...fields } as unknown as Extract<SessionEvent, { type: T }>;
 }
