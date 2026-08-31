@@ -7,7 +7,7 @@ export class FakeProvider implements Provider {
 
   constructor(private scripts: string[][]) {}
 
-  async *stream(opts: { model: string; messages: ChatMessage[]; signal?: AbortSignal })
+  async *stream(opts: { model: string; system?: string; messages: ChatMessage[]; signal?: AbortSignal })
     : AsyncIterable<StreamChunk> {
     this.calls.push(opts.messages);
     const script = this.scripts[this.i++] ?? [];
