@@ -16,33 +16,59 @@ export class Engine {
     return msgs;
   }
 
+  private tryAppend(e: any): void {
+    try {
+      this.opts.store.append(e);
+    } catch {
+      // swallow store failures
+    }
+  }
+
   async *send(text: string, o?: { signal?: AbortSignal }): AsyncIterable<EngineEvent> {
     const { store, provider, model, system } = this.opts;
     const turn = `turn-${crypto.randomUUID()}`;
     const user = mkEvent("user_message", { text });
-    store.append(user); yield user;
+    try {
+      store.append(user);
+    } catch (err) {
+      const e = mkEvent("error", { turn, message: err instanceof Error ? err.message : String(err) });
+      yield e;
+      const end = mkEvent("turn_end", { turn, stop: "error" });
+      this.tryAppend(end);
+      yield end;
+      return;
+    }
+    yield user;
 
     let acc = "";
+    let interrupted = false;
+
     const finish = (stop: "end" | "interrupt" | "error"): EngineEvent[] => {
       const out: EngineEvent[] = [];
-      if (acc.length > 0 || stop === "end") {
+      // Persist assistant_message only for "end" or "interrupt" with text
+      if (stop === "end" || (stop === "interrupt" && acc.length > 0)) {
         const msg = mkEvent("assistant_message", { turn, text: acc });
-        store.append(msg); out.push(msg);
+        this.tryAppend(msg);
+        out.push(msg);
       }
       const end = mkEvent("turn_end", { turn, stop });
-      store.append(end); out.push(end);
+      this.tryAppend(end);
+      out.push(end);
       return out;
     };
 
     try {
       for await (const chunk of provider.stream({ model, system, messages: this.context(), signal: o?.signal })) {
-        if (o?.signal?.aborted) break;
+        if (o?.signal?.aborted) {
+          interrupted = true;
+          break;
+        }
         if (chunk.type === "delta") { acc += chunk.text; yield { type: "assistant_delta", turn, text: chunk.text }; }
       }
-      yield* finish(o?.signal?.aborted ? "interrupt" : "end");
+      yield* finish(interrupted ? "interrupt" : "end");
     } catch (err) {
       const e = mkEvent("error", { turn, message: err instanceof Error ? err.message : String(err) });
-      store.append(e); yield e;
+      this.tryAppend(e); yield e;
       yield* finish("error");
     }
   }
