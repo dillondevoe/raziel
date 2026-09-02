@@ -11,12 +11,15 @@ export class AnthropicProvider implements Provider {
 
   async *stream(opts: {
     model: string; system?: string; messages: ChatMessage[]; signal?: AbortSignal;
+    sampling?: { temperature?: number; topP?: number };
   }): AsyncIterable<StreamChunk> {
     const stream = this.client.messages.stream({
       model: opts.model,
       max_tokens: 8192,
       system: opts.system,
       messages: opts.messages,
+      ...(opts.sampling?.temperature !== undefined ? { temperature: opts.sampling.temperature } : {}),
+      ...(opts.sampling?.topP !== undefined ? { top_p: opts.sampling.topP } : {}),
     });
     opts.signal?.addEventListener("abort", () => stream.abort(), { once: true });
 

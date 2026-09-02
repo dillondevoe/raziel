@@ -11,5 +11,6 @@ export interface Provider {
     system?: string;
     messages: ChatMessage[];
     signal?: AbortSignal;
+    sampling?: { temperature?: number; topP?: number };
   }): AsyncIterable<StreamChunk>;
 }

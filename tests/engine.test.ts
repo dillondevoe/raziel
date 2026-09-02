@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { Engine } from "../src/engine";
 import { SessionStore } from "../src/session";
 import { FakeProvider } from "../src/providers/fake";
+import { getProfile } from "../src/profiles";
 
 beforeEach(() => { process.env.RAZIEL_HOME = mkdtempSync(join(tmpdir(), "raziel-test-")); });
 
@@ -140,4 +141,13 @@ test("done chunk delivered in the same tick as abort still counts as end", async
   const end = store.replay().at(-1) as any;
   expect(end.type).toBe("turn_end");
   expect(end.stop).toBe("end");          // completed turn must not be mislabeled interrupt
+});
+
+test("engine takes model from a profile and passes sampling through to the provider", async () => {
+  const store = new SessionStore("e-profile");
+  const provider = new FakeProvider([["hi"]]);
+  const eng = new Engine({ provider, store, profile: getProfile("qwen")! });
+  await drain(eng.send("go"));
+  expect(provider.optsLog[0]?.model).toBe("qwen3.5:9b");
+  expect(provider.optsLog[0]?.sampling).toEqual({ temperature: 0.7, topP: 0.8 });
 });

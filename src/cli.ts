@@ -4,6 +4,7 @@ import { SessionStore } from "./session";
 import { AnthropicProvider } from "./providers/anthropic";
 import { FakeProvider } from "./providers/fake";
 import { renderBook, listSessions } from "./book";
+import { defaultProfileId, getProfile } from "./profiles";
 
 const SIGIL = "   ╭───╮\n   │ ✧ │\n   ╰───╯\nraziel — keeper of the Book of Secrets\n";
 
@@ -53,7 +54,9 @@ async function main(): Promise<void> {
   }
 
   const store = new SessionStore(arg("--session"));
-  const model = arg("--model") ?? "claude-sonnet-5";
+  // Full --profile / /model hot-swap wiring lands in a later M1a task; for now
+  // the CLI's default model is resolved from the registry rather than duplicated here.
+  const model = arg("--model") ?? getProfile(defaultProfileId())!.model;
   const provider = process.env.RAZIEL_FAKE === "1"
     ? new FakeProvider([["(fake reply)"]])
     : (() => {

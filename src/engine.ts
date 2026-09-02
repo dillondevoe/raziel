@@ -1,15 +1,33 @@
 import { mkEvent, type EngineEvent, type SessionEvent } from "./events";
 import type { ChatMessage, Provider } from "./provider";
 import type { SessionStore } from "./session";
+import type { ModelProfile } from "./profiles";
+
+type EngineOpts = { provider: Provider; store: SessionStore; system?: string }
+  & ({ model: string; profile?: never } | { model?: never; profile: ModelProfile });
 
 export class Engine {
-  constructor(private opts: {
-    provider: Provider; store: SessionStore; model: string; system?: string;
-  }) {}
+  private provider: Provider;
+  private store: SessionStore;
+  private system?: string;
+  private model: string;
+  private sampling?: { temperature?: number; topP?: number };
+
+  constructor(opts: EngineOpts) {
+    this.provider = opts.provider;
+    this.store = opts.store;
+    this.system = opts.system;
+    if (opts.profile) {
+      this.model = opts.profile.model;
+      this.sampling = opts.profile.sampling;
+    } else {
+      this.model = opts.model;
+    }
+  }
 
   private context(): ChatMessage[] {
     const msgs: ChatMessage[] = [];
-    for (const e of this.opts.store.replay()) {
+    for (const e of this.store.replay()) {
       if (e.type === "user_message") msgs.push({ role: "user", content: e.text });
       else if (e.type === "assistant_message") msgs.push({ role: "assistant", content: e.text });
     }
@@ -18,14 +36,14 @@ export class Engine {
 
   private tryAppend(e: SessionEvent): void {
     try {
-      this.opts.store.append(e);
+      this.store.append(e);
     } catch {
       // swallow store failures
     }
   }
 
   async *send(text: string, o?: { signal?: AbortSignal }): AsyncIterable<EngineEvent> {
-    const { store, provider, model, system } = this.opts;
+    const { store, provider, model, system, sampling } = this;
     const turn = `turn-${crypto.randomUUID()}`;
     const user = mkEvent("user_message", { text });
     try {
@@ -59,7 +77,7 @@ export class Engine {
     };
 
     try {
-      for await (const chunk of provider.stream({ model, system, messages: this.context(), signal: o?.signal })) {
+      for await (const chunk of provider.stream({ model, system, messages: this.context(), signal: o?.signal, sampling })) {
         if (chunk.type === "done") { sawDone = true; continue; }   // a delivered done is always recorded
         if (o?.signal?.aborted) { interrupted = true; break; }
         if (chunk.type === "delta") { acc += chunk.text; yield { type: "assistant_delta", turn, text: chunk.text }; }
