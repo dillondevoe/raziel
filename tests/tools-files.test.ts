@@ -1,5 +1,5 @@
 import { describe, test, expect } from "bun:test";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, writeFileSync, mkdirSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, sep } from "node:path";
 import { Workspace } from "../src/tools/workspace";
@@ -42,8 +42,8 @@ describe("Workspace.contain", () => {
     const base = mkdtempSync(join(tmpdir(), "raziel-pb-"));
     const wsDir = join(base, "ws");
     const siblingDir = join(base, "wsx");
-    require("node:fs").mkdirSync(wsDir);
-    require("node:fs").mkdirSync(siblingDir);
+    mkdirSync(wsDir);
+    mkdirSync(siblingDir);
     writeFileSync(join(siblingDir, "f"), "data");
     const ws = new Workspace(wsDir);
     // Attempt to reach /base/wsx/f via a relative path that resolves outside root.

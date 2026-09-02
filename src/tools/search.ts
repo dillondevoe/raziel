@@ -1,5 +1,5 @@
 import { readdir } from "node:fs/promises";
-import { join, relative } from "node:path";
+import { isAbsolute, join, relative } from "node:path";
 import type { BuiltinTool } from "./files";
 import type { Workspace } from "./workspace";
 
@@ -103,9 +103,15 @@ export const globTool: BuiltinTool = {
       if (!isRecord(args) || typeof args.pattern !== "string") {
         return { ok: false, output: "glob: args.pattern must be a string" };
       }
+      if (isAbsolute(args.pattern) || args.pattern.split(/[\\/]/).includes("..")) {
+        return { ok: false, output: `glob: pattern escapes workspace: ${args.pattern}` };
+      }
       const glob = new Bun.Glob(args.pattern);
       const results: string[] = [];
       for await (const match of glob.scan({ cwd: ws.root })) {
+        // Belt and braces: every match must independently resolve under
+        // root (catches a symlink inside root pointing outside it).
+        ws.contain(match);
         results.push(match);
       }
       return { ok: true, output: results.join("\n") };

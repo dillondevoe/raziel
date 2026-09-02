@@ -120,6 +120,9 @@ export const editFileTool: BuiltinTool = {
       if (typeof args.old !== "string" || typeof args.new !== "string") {
         return { ok: false, output: "edit_file: args.old and args.new must be strings" };
       }
+      if (args.old === "") {
+        return { ok: false, output: "edit_file: args.old must not be empty" };
+      }
       const resolved = ws.contain(args.path);
       const text = await Bun.file(resolved).text();
       const count = text.split(args.old).length - 1;
