@@ -122,3 +122,98 @@ test("default baseUrl is 127.0.0.1:11434 when not specified", async () => {
   }
   expect(calls[0]!.url).toBe("http://127.0.0.1:11434/api/chat");
 });
+
+test("fetch is invoked with the given abort signal (identity)", async () => {
+  const ctl = new AbortController();
+  const lines = [JSON.stringify({ done: true })];
+  let capturedSignal: AbortSignal | undefined;
+  const fetchImpl = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+    capturedSignal = init?.signal ?? undefined;
+    return new Response(ndjsonStream(lines), { status: 200 });
+  }) as unknown as typeof fetch;
+  const p = new OllamaProvider({ fetchImpl });
+  for await (const _ of p.stream({ model: "m", messages: [], signal: ctl.signal })) {
+    // drain
+  }
+  // Identity, not just presence — deleting the `signal: opts.signal` pass-through
+  // would leave this undefined (or some other signal) and fail the assertion.
+  expect(capturedSignal).toBe(ctl.signal);
+});
+
+test("abort while reader.read() is pending returns cleanly — no throw, no done", async () => {
+  // Simulates ollama's real behavior: fetch's AbortSignal rejects an in-flight
+  // body read with a DOMException("AbortError") once the signal fires.
+  const fetchImpl = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+    const signal = init?.signal;
+    const reader = {
+      read: () =>
+        new Promise<{ done: boolean; value?: Uint8Array }>((_resolve, reject) => {
+          if (signal?.aborted) {
+            reject(new DOMException("The operation was aborted", "AbortError"));
+            return;
+          }
+          signal?.addEventListener(
+            "abort",
+            () => reject(new DOMException("The operation was aborted", "AbortError")),
+            { once: true },
+          );
+          // otherwise: never resolves — the read is left pending until abort
+        }),
+    };
+    const body = { getReader: () => reader };
+    return { ok: true, status: 200, body } as unknown as Response;
+  }) as unknown as typeof fetch;
+
+  const p = new OllamaProvider({ fetchImpl });
+  const ctl = new AbortController();
+  const chunks: unknown[] = [];
+
+  const iterate = (async () => {
+    for await (const c of p.stream({ model: "m", messages: [], signal: ctl.signal })) {
+      chunks.push(c);
+    }
+  })();
+
+  // Let the generator reach the pending read() before aborting.
+  await new Promise((r) => setTimeout(r, 0));
+  ctl.abort();
+
+  await expect(iterate).resolves.toBeUndefined();
+  expect(chunks).toEqual([]);
+});
+
+test("mid-object NDJSON chunk split across two reads reassembles correctly", async () => {
+  const fullLine = JSON.stringify({ message: { role: "assistant", content: "Hey" }, done: false }) + "\n";
+  const doneLine = JSON.stringify({ done: true }) + "\n";
+  const fullText = fullLine + doneLine;
+  const splitAt = 12; // lands mid-object, well before the line's closing brace
+  const encoder = new TextEncoder();
+  const stream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(encoder.encode(fullText.slice(0, splitAt)));
+      controller.enqueue(encoder.encode(fullText.slice(splitAt)));
+      controller.close();
+    },
+  });
+  const fetchImpl = (async () => new Response(stream, { status: 200 })) as unknown as typeof fetch;
+  const p = new OllamaProvider({ fetchImpl });
+  const deltas: string[] = [];
+  let sawDone = false;
+  for await (const c of p.stream({ model: "m", messages: [] })) {
+    if (c.type === "delta") deltas.push(c.text);
+    else sawDone = true;
+  }
+  expect(deltas).toEqual(["Hey"]);
+  expect(sawDone).toBe(true);
+});
+
+test("malformed NDJSON line rejects with the line text in the message", async () => {
+  const lines = ["not valid json"];
+  const { fetchImpl } = fakeOk(lines);
+  const p = new OllamaProvider({ fetchImpl });
+  await expect(async () => {
+    for await (const _ of p.stream({ model: "m", messages: [] })) {
+      // should throw before/while yielding
+    }
+  }).toThrow(/not valid json/);
+});

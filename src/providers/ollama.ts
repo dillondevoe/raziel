@@ -51,7 +51,14 @@ export class OllamaProvider implements Provider {
 
     while (true) {
       if (opts.signal?.aborted) return;
-      const { done, value } = await reader.read();
+      let done: boolean;
+      let value: Uint8Array | undefined;
+      try {
+        ({ done, value } = await reader.read());
+      } catch (err) {
+        if (opts.signal?.aborted) return;
+        throw err instanceof Error ? err : new Error(String(err));
+      }
       if (done) break;
       buf += decoder.decode(value, { stream: true });
 
