@@ -68,7 +68,7 @@ export class AnthropicProvider implements Provider {
         toolBlocks.delete(event.index);
         // No input_json_delta ever arrived for this block: ambiguous whether the
         // SDK omits it for genuinely empty-input tools or something else went
-        // missing — treat empty as "{}" per the M1b brief's explicit fallback.
+        // missing — treat empty as "{}" controller-authorized fallback (Task 7 dispatch ruling, not brief-mandated — revisit when live-API zero-arg behavior is observed).
         const raw = block.json.length > 0 ? block.json : "{}";
         try {
           const args = JSON.parse(raw);
