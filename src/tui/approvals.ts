@@ -43,9 +43,16 @@ export type TuiAskUi = {
 
 /** Builds the TUI-facing ApprovalDeps.ask. Keys: "y"=allow, "a"=always, any
  * other key=deny (mirrors the REPL's createAsk). High/critical risk shows a
- * live "auto-deny in Ns" countdown line and races a deny-default timer;
- * low/medium waits for a key indefinitely, same split as createAsk. */
-export function makeTuiAsk(ui: TuiAskUi, timeoutMs: number = DEFAULT_DENY_TIMEOUT_MS): ApprovalDeps["ask"] {
+ * live "auto-deny in Ns" countdown line, ticking every `tickMs`, and races a
+ * deny-default timer; low/medium waits for a key indefinitely, same split as
+ * createAsk. `tickMs` defaults to COUNTDOWN_TICK_MS (1s) and is a new
+ * trailing optional parameter — existing 1- and 2-arg call sites/tests are
+ * unaffected. */
+export function makeTuiAsk(
+  ui: TuiAskUi,
+  timeoutMs: number = DEFAULT_DENY_TIMEOUT_MS,
+  tickMs: number = COUNTDOWN_TICK_MS,
+): ApprovalDeps["ask"] {
   return (card, risk) =>
     new Promise<"allow" | "deny" | "always">((resolve) => {
       let settled = false;
@@ -82,13 +89,23 @@ export function makeTuiAsk(ui: TuiAskUi, timeoutMs: number = DEFAULT_DENY_TIMEOU
       ui.showCard(card, risk);
 
       if (risk === "high" || risk === "critical") {
-        const deadline = Date.now() + timeoutMs;
+        // Tick-counted, not Date.now()-derived: a wall-clock
+        // ceil((deadline-now)/1000) collapses to one unchanging value for
+        // any sub-second timeoutMs (exactly the injected-test case), which
+        // made the countdown structurally unobservable as "live" below 1s.
+        // Decrementing by one whole second per tick instead — accurate for
+        // the real default (tickMs===1000, one tick per second) and still
+        // deterministically produces multiple distinct rendered values for
+        // a short injected tickMs, which is what the test asserts.
+        let secondsLeft = Math.max(1, Math.ceil(timeoutMs / 1000));
         const renderCountdown = (): void => {
-          const secondsLeft = Math.max(0, Math.ceil((deadline - Date.now()) / 1000));
           ui.showCard(`${card}\nauto-deny in ${secondsLeft}s`, risk);
         };
         renderCountdown();
-        tickTimer = setInterval(renderCountdown, COUNTDOWN_TICK_MS);
+        tickTimer = setInterval(() => {
+          secondsLeft = Math.max(0, secondsLeft - 1);
+          renderCountdown();
+        }, tickMs);
         tickTimer.unref?.();
         denyTimer = setTimeout(() => finish("deny"), timeoutMs);
         denyTimer.unref?.();
@@ -145,6 +162,10 @@ export function makeTuiAskUi(tui: TUI): TuiAskUi {
       tui.requestRender();
     },
     onKey(handler) {
+      // Raw terminal bytes, forwarded unfiltered/unsanitized — safe because
+      // makeTuiAsk's key check is exact-string ("y"/"a"/else-deny) behind
+      // its settled guard, so arbitrary or malformed input can only ever
+      // resolve to a safe deny, never reach the card body or double-resolve.
       return tui.addInputListener((data) => {
         handler(data);
         return { consume: true };

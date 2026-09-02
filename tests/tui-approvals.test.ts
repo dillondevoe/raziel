@@ -116,6 +116,19 @@ test("high-risk ask with a 10ms injected timeout and no key denies, and shows a 
   expect(showCalls.some((c) => /auto-deny in \d+s/.test(c.card))).toBe(true);
 });
 
+test("countdown ticks with an injected tickMs: at least two distinct \"auto-deny in Ns\" values render before deny, single resolution holds", async () => {
+  const { ui, showCalls, hideCalls } = makeFakeUi();
+  const ask = makeTuiAsk(ui, 50, 10);
+  const result = await ask("tool: run_command\nrisk: high", "high");
+
+  expect(result).toBe("deny");
+  const countdownValues = new Set(
+    showCalls.map((c) => /auto-deny in (\d+)s/.exec(c.card)?.[1]).filter((v): v is string => v !== undefined),
+  );
+  expect(countdownValues.size).toBeGreaterThanOrEqual(2);
+  expect(hideCalls()).toBe(1);
+});
+
 test("a key arriving after expiry does not re-resolve (single resolution)", async () => {
   const { ui, pressKey, hideCalls } = makeFakeUi();
   const ask = makeTuiAsk(ui, 10);
