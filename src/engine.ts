@@ -2,8 +2,9 @@ import { mkEvent, type EngineEvent, type SessionEvent } from "./events";
 import type { ChatMessage, Provider } from "./provider";
 import type { SessionStore } from "./session";
 import type { ModelProfile } from "./profiles";
+import { runToolTurn, type ToolDeps } from "./engine_tools";
 
-type EngineOpts = { provider: Provider; store: SessionStore; system?: string }
+type EngineOpts = { provider: Provider; store: SessionStore; system?: string; tools?: ToolDeps }
   & ({ model: string; profile?: never } | { model?: never; profile: ModelProfile });
 
 export class Engine {
@@ -13,11 +14,13 @@ export class Engine {
   private model: string;
   private sampling?: { temperature?: number; topP?: number };
   private contextTokens?: number;
+  private tools?: ToolDeps;
 
   constructor(opts: EngineOpts) {
     this.provider = opts.provider;
     this.store = opts.store;
     this.system = opts.system;
+    this.tools = opts.tools;
     if (opts.profile) {
       this.model = opts.profile.model;
       this.sampling = opts.profile.sampling;
@@ -27,11 +30,15 @@ export class Engine {
     }
   }
 
+  // Replays persisted turns into provider-facing messages. tool_result
+  // events replay as a user-role "[tool_result <tool>] <output>" message so
+  // a resumed session keeps the tool's output in context.
   private context(): ChatMessage[] {
     const msgs: ChatMessage[] = [];
     for (const e of this.store.replay()) {
       if (e.type === "user_message") msgs.push({ role: "user", content: e.text });
       else if (e.type === "assistant_message") msgs.push({ role: "assistant", content: e.text });
+      else if (e.type === "tool_result") msgs.push({ role: "user", content: `[tool_result ${e.tool}] ${e.output}` });
     }
     return msgs;
   }
@@ -45,7 +52,7 @@ export class Engine {
   }
 
   async *send(text: string, o?: { signal?: AbortSignal }): AsyncIterable<EngineEvent> {
-    const { store, provider, model, system, sampling, contextTokens } = this;
+    const { store, provider, model, system, sampling, contextTokens, tools } = this;
     const turn = `turn-${crypto.randomUUID()}`;
     const user = mkEvent("user_message", { text });
     try {
@@ -77,6 +84,18 @@ export class Engine {
       out.push(end);
       return out;
     };
+
+    if (tools) {
+      yield* runToolTurn({
+        provider, model, system, sampling, contextTokens, turn, tools,
+        signal: o?.signal,
+        getContext: () => this.context(),
+        tryAppend: (e) => this.tryAppend(e),
+        onDelta: (t) => { acc += t; },
+        finish,
+      });
+      return;
+    }
 
     try {
       for await (const chunk of provider.stream({ model, system, messages: this.context(), signal: o?.signal, sampling, contextTokens })) {
