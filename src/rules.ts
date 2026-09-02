@@ -101,6 +101,15 @@ export class Rules {
     return this.rules.length;
   }
 
+  /** Removes the rule at 1-indexed position `n` (matching the numbered
+   * `/approve` listing). Returns false (no-op) if `n` is out of range. */
+  removeAt(n: number): boolean {
+    const idx = n - 1;
+    if (idx < 0 || idx >= this.rules.length) return false;
+    this.rules.splice(idx, 1);
+    return true;
+  }
+
   list(): StandingRule[] {
     return [...this.rules];
   }

@@ -64,6 +64,23 @@ describe("Rules", () => {
     expect(rules.count()).toBe(1);
   });
 
+  test("removeAt: removes the 1-indexed rule and returns true", () => {
+    const rules = Rules.load(mkRulesPath());
+    rules.add({ tool: "read_file", pattern: '*"path":"a.txt"*' });
+    rules.add({ tool: "read_file", pattern: '*"path":"b.txt"*' });
+    expect(rules.removeAt(1)).toBe(true);
+    expect(rules.count()).toBe(1);
+    expect(rules.list()).toEqual([{ tool: "read_file", pattern: '*"path":"b.txt"*' }]);
+  });
+
+  test("removeAt: out-of-range index is a no-op and returns false", () => {
+    const rules = Rules.load(mkRulesPath());
+    rules.add({ tool: "read_file", pattern: '*"path":"a.txt"*' });
+    expect(rules.removeAt(0)).toBe(false);
+    expect(rules.removeAt(5)).toBe(false);
+    expect(rules.count()).toBe(1);
+  });
+
   test("add/save/load/matches roundtrip with a glob pattern", () => {
     const path = mkRulesPath();
     const rules = Rules.load(path);

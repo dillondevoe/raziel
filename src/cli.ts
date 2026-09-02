@@ -1,11 +1,16 @@
 import { createInterface } from "node:readline";
+import { join } from "node:path";
 import { Engine } from "./engine";
-import { SessionStore } from "./session";
+import { SessionStore, razielHome } from "./session";
 import { FakeProvider } from "./providers/fake";
 import { renderBook, listSessions } from "./book";
 import { defaultProfileId, getProfile } from "./profiles";
 import { sanitizeForTerminal } from "./term";
-import { providerForOrExit, createModelCommand, statusLine } from "./commands";
+import { providerForOrExit, createModelCommand, createApproveCommand, createAsk, statusLine } from "./commands";
+import { Workspace } from "./tools/workspace";
+import { builtinTools } from "./tools/registry";
+import { Rules } from "./rules";
+import { ApprovalManager } from "./approvals";
 
 export { providerFor, createModelCommand } from "./commands";
 
@@ -83,10 +88,34 @@ async function main(): Promise<void> {
   const modelIsOverridden = profile.provider === "anthropic" && modelOverride !== undefined;
   const model = modelIsOverridden ? modelOverride : profile.model;
 
+  const write = (s: string) => process.stdout.write(s);
+
+  const ws = new Workspace(process.cwd());
+  const rulesPath = join(razielHome(), "rules.json");
+  const rules = Rules.load(rulesPath);
+  if (rules.loadWarning) write(`raziel: ${rules.loadWarning}\n`);
+
+  // `inputIter` is assigned below once readline is wired up; createAsk's
+  // readLine closure only runs once the REPL is actually running, by which
+  // point it's set — this lets ask() and the REPL's own prompt loop pull
+  // from the exact same input stream in sequence (never concurrently).
+  let inputIter: AsyncGenerator<string> | undefined;
+  const ask = createAsk({
+    write,
+    readLine: async () => {
+      if (!inputIter) return undefined;
+      const r = await inputIter.next();
+      return r.done ? undefined : r.value;
+    },
+  });
+  const approvals = new ApprovalManager(rules, { ask }, rulesPath);
+  const registry = builtinTools();
+  const tools = { registry, ws, approvals };
+
   const provider = process.env.RAZIEL_FAKE === "1" ? new FakeProvider([["(fake reply)"]]) : providerForOrExit(profile);
   const engine = modelIsOverridden
-    ? new Engine({ provider, store, model })
-    : new Engine({ provider, store, profile });
+    ? new Engine({ provider, store, model, tools })
+    : new Engine({ provider, store, profile, tools });
   const engineBox: { current: Engine } = { current: engine };
 
   const signalRef: { current: AbortController | null } = { current: null };
@@ -100,20 +129,22 @@ async function main(): Promise<void> {
   // Piped/non-TTY stdin never fires readline's "SIGINT" event, so this stays registered.
   process.on("SIGINT", handleSigint);
 
-  const write = (s: string) => process.stdout.write(s);
   if (process.stdout.isTTY) write(SIGIL);
   write(statusLine(store, model, provider.name));
-  const onCommand = createModelCommand({ engineBox, store, initialProfile: profile, write });
+  const modelCmd = createModelCommand({ engineBox, store, initialProfile: profile, write, tools });
+  const approveCmd = createApproveCommand({ rules, rulesPath, write });
+  const onCommand = (line: string): "handled" | "not-command" =>
+    modelCmd(line) === "handled" ? "handled" : approveCmd(line);
 
   const rl = createInterface({ input: process.stdin, output: process.stdout, prompt: "raziel> " });
   rl.on("close", () => { rlClosed = true; });
   // On a real TTY, readline intercepts Ctrl+C before process-level SIGINT ever fires.
   rl.on("SIGINT", () => { handleSigint(); if (!rlClosed) rl.prompt(); });
   rl.prompt();
-  const input = (async function* () {
+  inputIter = (async function* () {
     for await (const line of rl) { yield String(line); if (!rlClosed) rl.prompt(); }
   })();
-  await runRepl({ engine: engineBox, input, write, signalRef, onCommand });
+  await runRepl({ engine: engineBox, input: inputIter, write, signalRef, onCommand });
   rl.close();
 }
 
