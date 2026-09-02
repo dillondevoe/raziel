@@ -1,5 +1,21 @@
 import { test, expect } from "bun:test";
 import { mkEvent, isValidEvent } from "../src/events";
+import { canonicalJson, argsHash } from "../src/tools/types";
+
+test("canonicalJson is key-order stable and argsHash matches recomputation", () => {
+  expect(canonicalJson({ b: 1, a: { d: 2, c: 3 } })).toBe('{"a":{"c":3,"d":2},"b":1}');
+  expect(argsHash("t", { b: 1, a: 2 })).toBe(argsHash("t", { a: 2, b: 1 }));
+  expect(argsHash("t", { a: 1 })).not.toBe(argsHash("u", { a: 1 }));
+});
+
+test("v2 tool events validate; forged/missing fields rejected", () => {
+  const ok = mkEvent("tool_request", { turn: "t", tool: "read_file", args: { p: 1 }, requestId: "r1", provenance: "provider_structured", argsHash: "ab".repeat(32) });
+  expect(isValidEvent(JSON.parse(JSON.stringify(ok)))).toBe(true);
+  const forged = { ...JSON.parse(JSON.stringify(ok)), provenance: "text_parsed" };
+  expect(isValidEvent(forged)).toBe(false);
+  const noHash = { ...JSON.parse(JSON.stringify(ok)) }; delete (noHash as any).argsHash;
+  expect(isValidEvent(noHash)).toBe(false);
+});
 
 test("mkEvent stamps machine id and ISO timestamp", () => {
   const e = mkEvent("user_message", { text: "hi" });
@@ -21,10 +37,10 @@ test("isValidEvent: accepts a well-formed event of every known type", () => {
   expect(isValidEvent(mkEvent("turn_end", { turn: "t1", stop: "end" }))).toBe(true);
   expect(isValidEvent(mkEvent("error", { turn: "t1", message: "boom" }))).toBe(true);
   expect(isValidEvent(mkEvent("error", { message: "boom" }))).toBe(true); // turn is optional
-  expect(isValidEvent(mkEvent("tool_request", { turn: "t1", tool: "ls", args: {} }))).toBe(true);
-  expect(isValidEvent(mkEvent("approval_request", { turn: "t1", requestId: "r1" }))).toBe(true);
+  expect(isValidEvent(mkEvent("tool_request", { turn: "t1", tool: "ls", args: {}, requestId: "r1", provenance: "provider_structured", argsHash: "ab".repeat(32) }))).toBe(true);
+  expect(isValidEvent(mkEvent("approval_request", { turn: "t1", requestId: "r1", tool: "ls", argsHash: "ab".repeat(32), risk: "low" }))).toBe(true);
   expect(isValidEvent(mkEvent("approval_decision", { requestId: "r1", decision: "allow" }))).toBe(true);
-  expect(isValidEvent(mkEvent("tool_result", { turn: "t1", tool: "ls", ok: true, output: "" }))).toBe(true);
+  expect(isValidEvent(mkEvent("tool_result", { turn: "t1", tool: "ls", ok: true, output: "", requestId: "r1", taint: "tool_output" }))).toBe(true);
 });
 
 test("isValidEvent: rejects an unknown type", () => {

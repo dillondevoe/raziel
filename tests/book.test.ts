@@ -62,10 +62,55 @@ test("renderBook: empty interrupt (turn_end only, no assistant text) renders wit
   expect(out).toContain("interrupt 12:00:10");
 });
 
+test("renderBook: tool events render one line each with tool name and argsHash/risk", () => {
+  const events: SessionEvent[] = [
+    { ...mkEvent("user_message", { text: "run a tool" }), ts: "2026-08-31T12:00:11.000Z" },
+    { ...mkEvent("tool_request", { turn: "t5", tool: "read_file", args: { p: "/tmp" }, requestId: "r1", provenance: "provider_structured", argsHash: "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789" }), ts: "2026-08-31T12:00:12.000Z" },
+    { ...mkEvent("approval_request", { turn: "t5", requestId: "r1", tool: "read_file", argsHash: "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789", risk: "medium" }), ts: "2026-08-31T12:00:12.100Z" },
+    { ...mkEvent("approval_decision", { requestId: "r1", decision: "allow" }), ts: "2026-08-31T12:00:12.200Z" },
+    { ...mkEvent("tool_result", { turn: "t5", tool: "read_file", ok: true, output: "file contents", requestId: "r1", taint: "tool_output" }), ts: "2026-08-31T12:00:12.300Z" },
+    { ...mkEvent("assistant_message", { turn: "t5", text: "done" }), ts: "2026-08-31T12:00:13.000Z" },
+    { ...mkEvent("turn_end", { turn: "t5", stop: "end" }), ts: "2026-08-31T12:00:14.000Z" },
+  ];
+  const out = renderBook(events);
+  expect(out).toContain("run a tool");
+  expect(out).toContain("read_file");
+  expect(out).toContain("medium");
+  expect(out).toContain("abcdef01");
+  expect(out).toContain("allow");
+  expect(out).toContain("done");
+});
+
+test("renderBook: tool_result with ok:false renders with ✗ marker", () => {
+  const events: SessionEvent[] = [
+    { ...mkEvent("user_message", { text: "run a tool" }), ts: "2026-08-31T12:00:11.000Z" },
+    { ...mkEvent("tool_request", { turn: "t5", tool: "read_file", args: {}, requestId: "r1", provenance: "provider_structured", argsHash: "ab".repeat(32) }), ts: "2026-08-31T12:00:12.000Z" },
+    { ...mkEvent("tool_result", { turn: "t5", tool: "read_file", ok: false, output: "file not found", requestId: "r1", taint: "tool_output" }), ts: "2026-08-31T12:00:12.300Z" },
+    { ...mkEvent("assistant_message", { turn: "t5", text: "failed" }), ts: "2026-08-31T12:00:13.000Z" },
+    { ...mkEvent("turn_end", { turn: "t5", stop: "end" }), ts: "2026-08-31T12:00:14.000Z" },
+  ];
+  const out = renderBook(events);
+  expect(out).toContain("read_file");
+  expect(out).toContain("✗");
+});
+
+test("renderBook: OSC/control chars in tool output are sanitized", () => {
+  const events: SessionEvent[] = [
+    { ...mkEvent("user_message", { text: "run a tool" }), ts: "2026-08-31T12:00:11.000Z" },
+    { ...mkEvent("tool_request", { turn: "t5", tool: "read_file", args: {}, requestId: "r1", provenance: "provider_structured", argsHash: "ab".repeat(32) }), ts: "2026-08-31T12:00:12.000Z" },
+    { ...mkEvent("tool_result", { turn: "t5", tool: "read_file", ok: true, output: "file\x1b]52;c;evil\x07contents", requestId: "r1", taint: "tool_output" }), ts: "2026-08-31T12:00:12.300Z" },
+    { ...mkEvent("assistant_message", { turn: "t5", text: "done" }), ts: "2026-08-31T12:00:13.000Z" },
+    { ...mkEvent("turn_end", { turn: "t5", stop: "end" }), ts: "2026-08-31T12:00:14.000Z" },
+  ];
+  const out = renderBook(events);
+  expect(out).not.toContain("\x1b");
+  expect(out).toContain("filecontents");
+});
+
 test("renderBook: unknown/torn event types are skipped gracefully", () => {
   const events: SessionEvent[] = [
     { ...mkEvent("user_message", { text: "run a tool" }), ts: "2026-08-31T12:00:11.000Z" },
-    { ...mkEvent("tool_request", { turn: "t5", tool: "ls", args: {} }), ts: "2026-08-31T12:00:12.000Z" },
+    { ...mkEvent("tool_request", { turn: "t5", tool: "ls", args: {}, requestId: "r1", provenance: "provider_structured", argsHash: "ab".repeat(32) }), ts: "2026-08-31T12:00:12.000Z" },
     { ...mkEvent("assistant_message", { turn: "t5", text: "done" }), ts: "2026-08-31T12:00:13.000Z" },
     { ...mkEvent("turn_end", { turn: "t5", stop: "end" }), ts: "2026-08-31T12:00:14.000Z" },
   ];

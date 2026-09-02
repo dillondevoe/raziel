@@ -1,3 +1,5 @@
+import type { RiskClass, Provenance } from "./tools/types";
+
 type Base = { id: string; ts: string };
 
 export type SessionEvent = Base & (
@@ -5,10 +7,10 @@ export type SessionEvent = Base & (
   | { type: "assistant_message"; turn: string; text: string }
   | { type: "turn_end"; turn: string; stop: "end" | "interrupt" | "error" }
   | { type: "error"; turn?: string; message: string }
-  | { type: "tool_request"; turn: string; tool: string; args: unknown }
-  | { type: "approval_request"; turn: string; requestId: string }
+  | { type: "tool_request"; turn: string; tool: string; args: unknown; requestId: string; provenance: Provenance; argsHash: string }
+  | { type: "approval_request"; turn: string; requestId: string; tool: string; argsHash: string; risk: RiskClass }
   | { type: "approval_decision"; requestId: string; decision: "allow" | "deny" | "always" }
-  | { type: "tool_result"; turn: string; tool: string; ok: boolean; output: string }
+  | { type: "tool_result"; turn: string; tool: string; ok: boolean; output: string; requestId: string; taint: "tool_output" }
 );
 
 export type EngineEvent = SessionEvent | { type: "assistant_delta"; turn: string; text: string };
@@ -42,10 +44,10 @@ const FIELD_CHECKS: { [T in SessionEvent["type"]]: Record<string, FieldCheck> } 
   assistant_message: { turn: str, text: str },
   turn_end: { turn: str, stop: oneOf("end", "interrupt", "error") },
   error: { turn: optStr, message: str },
-  tool_request: { turn: str, tool: str, args: anyVal },
-  approval_request: { turn: str, requestId: str },
+  tool_request: { turn: str, tool: str, args: anyVal, requestId: str, provenance: oneOf("provider_structured"), argsHash: str },
+  approval_request: { turn: str, requestId: str, tool: str, argsHash: str, risk: oneOf("low", "medium", "high", "critical") },
   approval_decision: { requestId: str, decision: oneOf("allow", "deny", "always") },
-  tool_result: { turn: str, tool: str, ok: bool, output: str },
+  tool_result: { turn: str, tool: str, ok: bool, output: str, requestId: str, taint: oneOf("tool_output") },
 };
 
 /** Validates a parsed JSONL line as a well-formed SessionEvent: known `type`,

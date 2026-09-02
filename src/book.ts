@@ -64,24 +64,65 @@ function collectTurns(events: SessionEvent[]): Turn[] {
 
 /** Pretty-prints a session's event log as a transcript. Pure: no I/O. */
 export function renderBook(events: SessionEvent[]): string {
-  const turns = collectTurns(events);
-  if (turns.length === 0) return `${paint(DIM, "(the book is empty)")}\n`;
+  if (events.length === 0) return `${paint(DIM, "(the book is empty)")}\n`;
 
   const lines: string[] = [];
-  for (const t of turns) {
-    lines.push(`  ${paint(CYAN, "›")} ${sanitizeForTerminal(t.user)}`);
-    if (t.body?.kind === "text") {
-      lines.push(`  ${sanitizeForTerminal(t.body.text)}`);
-    } else if (t.body?.kind === "interrupted") {
-      const marker = paint(YELLOW, "⊘ interrupted");
-      const text = sanitizeForTerminal(t.body.text);
-      lines.push(text ? `  ${marker} — ${text}` : `  ${marker}`);
-    } else if (t.body?.kind === "error") {
-      lines.push(`  ${paint(RED, `✗ error: ${sanitizeForTerminal(t.body.message)}`)}`);
+  let userText: string | null = null;
+  let turnBody: TurnBody = null;
+  let turnStop = "end";
+  let turnTs = "";
+
+  for (const e of events) {
+    if (e.type === "user_message") {
+      userText = e.text;
+      turnBody = null;
+    } else if (e.type === "assistant_message") {
+      turnBody = { kind: "text", text: e.text };
+    } else if (e.type === "error") {
+      turnBody = { kind: "error", message: e.message };
+    } else if (e.type === "turn_end") {
+      // Render the accumulated turn
+      if (userText !== null) {
+        lines.push(`  ${paint(CYAN, "›")} ${sanitizeForTerminal(userText)}`);
+        if (e.stop === "interrupt" && turnBody?.kind === "text") {
+          const marker = paint(YELLOW, "⊘ interrupted");
+          const text = sanitizeForTerminal(turnBody.text);
+          lines.push(text ? `  ${marker} — ${text}` : `  ${marker}`);
+        } else if (turnBody?.kind === "text") {
+          lines.push(`  ${sanitizeForTerminal(turnBody.text)}`);
+        } else if (turnBody?.kind === "error") {
+          lines.push(`  ${paint(RED, `✗ error: ${sanitizeForTerminal(turnBody.message)}`)}`);
+        } else if (e.stop === "interrupt") {
+          lines.push(`  ${paint(YELLOW, "⊘ interrupted")}`);
+        }
+        lines.push(`  ${paint(DIM, `· ${e.stop} ${hms(e.ts)}`)}`);
+        lines.push("");
+      }
+      userText = null;
+      turnBody = null;
+    } else if (e.type === "tool_request") {
+      const hash = sanitizeForTerminal((e.argsHash as string).slice(0, 8));
+      const tool = sanitizeForTerminal(e.tool);
+      lines.push(`  ${paint(CYAN, "⚙")} tool_request ${tool} ${hash}`);
+    } else if (e.type === "approval_request") {
+      const risk = sanitizeForTerminal((e as any).risk as string);
+      const tool = sanitizeForTerminal(e.tool);
+      lines.push(`  ${paint(YELLOW, "?")} approval_request ${tool} ${paint(YELLOW, `[${risk}]`)}`);
+    } else if (e.type === "approval_decision") {
+      const decision = sanitizeForTerminal(e.decision);
+      lines.push(`  ${paint(CYAN, "→")} approval_decision ${decision}`);
+    } else if (e.type === "tool_result") {
+      const tool = sanitizeForTerminal(e.tool);
+      const ok = (e as any).ok as boolean;
+      const statusMarker = ok ? paint(CYAN, "✓") : paint(RED, "✗");
+      lines.push(`  ${statusMarker} tool_result ${tool}`);
+      const output = sanitizeForTerminal(e.output);
+      if (output) {
+        lines.push(`  ${output}`);
+      }
     }
-    lines.push(`  ${paint(DIM, `· ${t.stop} ${hms(t.ts)}`)}`);
-    lines.push("");
   }
+
   return lines.join("\n") + "\n";
 }
 
