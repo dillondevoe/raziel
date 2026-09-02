@@ -6,8 +6,11 @@ import { handleToolCall, type ToolCall, type ToolDeps } from "./engine_tool_call
 export type { ToolDeps } from "./engine_tool_call";
 
 // R10 bound: max tool rounds per turn before the loop force-ends rather than
-// re-streaming forever against a provider that keeps calling tools.
-const MAX_ROUNDS = 8;
+// re-streaming forever against a provider that keeps calling tools. Exported
+// (M1c Task 5, requirement B) so src/tui/status.ts's "tool round N/MAX_ROUNDS"
+// line reads the SAME constant instead of carrying its own hardcoded "8" —
+// a duplicated literal that would silently drift if this one ever changed.
+export const MAX_ROUNDS = 8;
 
 type Stop = "end" | "interrupt" | "error";
 

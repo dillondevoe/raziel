@@ -54,7 +54,14 @@ export function statusLine(store: SessionStore, model: string, providerName: str
  * every swap re-slices it to the NEW profile's maxToolSurface (I1, fix
  * round) rather than reusing whatever slice the previous profile had, so a
  * swap from a narrow-surface profile to a wider one regains the tools the
- * narrower profile didn't get, and vice versa. */
+ * narrower profile didn't get, and vice versa.
+ *
+ * `deps.onSwap`, when given, fires exactly once per SUCCESSFUL swap (never
+ * on an unknown-id or provider-construction error), after `engineBox` is
+ * already updated — M1c Task 5's TUI wiring uses it to refresh the
+ * statusline and to let `/escalate` (which reuses this same swap path)
+ * detect success without this function's return type having to change
+ * from the plain "handled"/"not-command" every existing call site expects. */
 export function createModelCommand(deps: {
   engineBox: { current: Engine };
   store: SessionStore;
@@ -62,6 +69,7 @@ export function createModelCommand(deps: {
   write: (s: string) => void;
   providerForFn?: typeof providerFor;
   tools?: ToolDeps;
+  onSwap?: (info: { profile: ModelProfile; providerName: string }) => void;
 }): (line: string) => "handled" | "not-command" {
   let current = deps.initialProfile;
   const buildProvider = deps.providerForFn ?? providerFor;
@@ -97,6 +105,7 @@ export function createModelCommand(deps: {
     deps.engineBox.current = new Engine({ provider, store: deps.store, profile: next, tools });
     current = next;
     deps.write(statusLine(deps.store, next.model, provider.name));
+    deps.onSwap?.({ profile: next, providerName: provider.name });
     return "handled";
   };
 }

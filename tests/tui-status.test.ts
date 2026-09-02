@@ -1,6 +1,7 @@
 import { test, expect } from "bun:test";
 import { Container } from "@earendil-works/pi-tui";
 import { Status } from "../src/tui/status";
+import { MAX_ROUNDS } from "../src/engine_tools";
 import type { ModelProfile } from "../src/profiles";
 
 const WIDTH = 80;
@@ -195,4 +196,92 @@ test("comment forbids estimated numbers (M1d deferral)", () => {
   expect(code).toContain("M1d");
   expect(code).toContain("estimated");
   expect(code).toContain("forbid");
+});
+
+// --- Task 5 fix-round: requirements B, C, D --------------------------------
+
+test("(B) tool round cap comes from engine_tools' MAX_ROUNDS, not a hardcoded literal", () => {
+  const parent = new Container();
+  const status = new Status(parent);
+  const profile: ModelProfile = {
+    id: "sonnet", provider: "anthropic", model: "claude-sonnet-5",
+    contextTokens: 200_000, maxToolSurface: 24, parser: "native", streamingTools: true,
+  };
+
+  status.setProfile(profile);
+  status.setSession("abc123def456");
+  status.setActivity({ kind: "tool", round: 3 });
+
+  const frame = parent.render(WIDTH).join("\n");
+  expect(frame).toContain(`tool round 3/${MAX_ROUNDS}`);
+});
+
+test("(C) providerName reflects the LIVE provider, not profile.provider — a fake provider under an anthropic profile never renders \"anthropic\"", () => {
+  const parent = new Container();
+  const status = new Status(parent);
+  const sonnetProfile: ModelProfile = {
+    id: "sonnet", provider: "anthropic", model: "claude-sonnet-5",
+    contextTokens: 200_000, maxToolSurface: 24, parser: "native", streamingTools: true,
+  };
+
+  // Same profile shape a real RAZIEL_FAKE=1 run would use — "anthropic" per
+  // the static profile registry — but the actually-running provider is the
+  // fake one, and that's what must appear on the statusline.
+  status.setProfile(sonnetProfile, "fake");
+  status.setSession("abc123def456");
+  status.setActivity({ kind: "idle" });
+
+  const frame = parent.render(WIDTH).join("\n");
+  expect(frame).toContain("fake");
+  expect(frame).not.toContain("anthropic");
+});
+
+test("(C) omitting providerName falls back to profile.provider — pre-existing single-arg call sites unaffected", () => {
+  const parent = new Container();
+  const status = new Status(parent);
+  const profile: ModelProfile = {
+    id: "sonnet", provider: "anthropic", model: "claude-sonnet-5",
+    contextTokens: 200_000, maxToolSurface: 24, parser: "native", streamingTools: true,
+  };
+
+  status.setProfile(profile); // no second arg
+  status.setSession("abc123def456");
+
+  const frame = parent.render(WIDTH).join("\n");
+  expect(frame).toContain("anthropic");
+});
+
+test("(D) session id containing an OSC escape sequence is sanitized THEN truncated — no headless escape payload leaks through", () => {
+  const parent = new Container();
+  const status = new Status(parent);
+  const profile: ModelProfile = {
+    id: "sonnet", provider: "anthropic", model: "claude-sonnet-5",
+    contextTokens: 200_000, maxToolSurface: 24, parser: "native", streamingTools: true,
+  };
+  // A well-formed OSC title-set sequence, terminated well past the first 8
+  // raw characters — truncate-then-sanitize would slice the sequence in
+  // half and leave "]0;evilXXXXXXXX" visible; sanitize-then-truncate must
+  // remove it whole first, leaving only the trailing clean id characters.
+  const hostileId = "\x1b]0;evilXXXXXXXX\x07realid12345";
+
+  status.setProfile(profile);
+  status.setSession(hostileId);
+  status.setActivity({ kind: "idle" });
+
+  const frame = parent.render(WIDTH).join("\n");
+  expect(frame.includes("\x1b")).toBe(false);
+  expect(frame).not.toContain("evil");
+  expect(frame).toContain("session realid1");
+});
+
+test("(D) an unset profile renders no stray leading \"· \" separator", () => {
+  const parent = new Container();
+  const status = new Status(parent);
+
+  status.setSession("abc123def456");
+  status.setActivity({ kind: "idle" });
+
+  const frame = parent.render(WIDTH).join("\n");
+  expect(frame.startsWith("· ")).toBe(false);
+  expect(frame).toBe("session abc123de · idle");
 });

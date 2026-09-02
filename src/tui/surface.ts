@@ -27,6 +27,13 @@ export type SurfaceDeps = {
   onQuit(): void;
   /** Whether a turn is in flight; decides ctrl-c's interrupt-vs-quit split. */
   isStreaming(): boolean;
+  /** Fired once, synchronously, from inside start() right after the
+   * alt-screen TUI is constructed and started — the mounting seam M1c
+   * Task 5 needs (Transcript/Status/Editor/the approval card all mount onto
+   * this SAME running TUI instance, which start() otherwise keeps private).
+   * Optional: every pre-Task-5 caller/test only cares about ctrl-c +
+   * lifecycle and never mounts anything, so omitting it is unaffected. */
+  onReady?(tui: TUI): void;
 };
 
 const BANNER = "raziel — TUI shell (minimal)\nCtrl+C: interrupt a running turn, or quit when idle.\n";
@@ -61,6 +68,7 @@ export class TuiSurface {
       return { consume: true };
     });
     tui.start();
+    this.deps.onReady?.(tui);
   }
 
   /** Full terminal restore. Safe to call twice, and safe if never started. */

@@ -4,14 +4,16 @@ import { Engine } from "./engine";
 import { SessionStore, razielHome } from "./session";
 import { FakeProvider } from "./providers/fake";
 import { renderBook, listSessions } from "./book";
-import { defaultProfileId, getProfile } from "./profiles";
+import { defaultProfileId, getProfile, type ModelProfile } from "./profiles";
 import { sanitizeForTerminal } from "./term";
 import { providerForOrExit, createModelCommand, createApproveCommand, createAsk, statusLine } from "./commands";
 import { Workspace } from "./tools/workspace";
 import { builtinTools, sliceTools } from "./tools/registry";
 import { Rules } from "./rules";
 import { ApprovalManager } from "./approvals";
-import { TuiSurface, wantsTui } from "./tui/surface";
+import { wantsTui } from "./tui/surface";
+import { runTuiApp } from "./tui/app";
+import { createSessionCommand, createEscalateCommand, type ProfileBox } from "./tui/session_cmd";
 
 export { providerFor, createModelCommand } from "./commands";
 
@@ -27,22 +29,6 @@ export function makeSigintHandler(deps: {
     if (deps.signalRef.current) deps.signalRef.current.abort();
     else { deps.write("\nbye\n"); deps.exit(0); }
   };
-}
-
-/** Boots the minimal TUI shell (Task 1 of M1c) — alt-screen + ctrl-c routing,
- * no transcript/engine wiring yet (that's Task 5). Resolves once onQuit fires
- * (idle ctrl-c), after which the surface has already been torn down. */
-async function runTuiShell(signalRef: { current: AbortController | null }): Promise<void> {
-  let resolveQuit!: () => void;
-  const quit = new Promise<void>((resolve) => { resolveQuit = resolve; });
-  const surface = new TuiSurface({
-    onInterrupt: () => signalRef.current?.abort(),
-    onQuit: () => resolveQuit(),
-    isStreaming: () => signalRef.current !== null,
-  });
-  surface.start();
-  await quit;
-  surface.stop();
 }
 
 export async function runRepl(opts: {
@@ -112,6 +98,40 @@ async function main(): Promise<void> {
   const rules = Rules.load(rulesPath);
   if (rules.loadWarning) write(sanitizeForTerminal(`raziel: ${rules.loadWarning}`) + "\n");
 
+  // `registryFull` carries the UNSLICED registry — createModelCommand (and,
+  // in the TUI, createSessionCommand) re-slices it to each newly-selected
+  // profile's maxToolSurface on every swap (I1, fix round).
+  const registryFull = builtinTools();
+
+  const provider = process.env.RAZIEL_FAKE === "1" ? new FakeProvider([["(fake reply)"]]) : providerForOrExit(profile);
+
+  const signalRef: { current: AbortController | null } = { current: null };
+  let rlClosed = false;
+  const handleSigint = makeSigintHandler({
+    signalRef,
+    isClosed: () => rlClosed,
+    exit: process.exit,
+    write: (s) => process.stdout.write(s),
+  });
+  // Piped/non-TTY stdin never fires readline's "SIGINT" event, so this stays
+  // registered even in TUI mode — raw mode there defeats interactive ctrl-c's
+  // SIGINT translation (docs/pi-tui-reference.md §3), but a real out-of-band
+  // SIGINT (e.g. a supervisor) is unaffected and this stays a second line of
+  // defense for it, same as the reference recommends.
+  process.on("SIGINT", handleSigint);
+
+  if (wantsTui()) {
+    // The raw `--model` override (M0-smoke back-compat, anthropic-only) has
+    // no first-class profile identity of its own — the TUI's /model,
+    // /session, /escalate machinery is profile-shaped, so fold the override
+    // into a derived profile object (spreading a frozen ModelProfile yields
+    // a fresh, unfrozen one) instead of threading a parallel "raw model
+    // string" concept through every TUI command.
+    const tuiProfile: ModelProfile = modelIsOverridden ? { ...profile, model } : profile;
+    await runTuiApp({ provider, store, profile: tuiProfile, registryFull, ws, rules, rulesPath });
+    return;
+  }
+
   // `inputIter` is assigned below once readline is wired up; createAsk's
   // readLine closure only runs once the REPL is actually running, by which
   // point it's set — this lets ask() and the REPL's own prompt loop pull
@@ -126,42 +146,29 @@ async function main(): Promise<void> {
     },
   });
   const approvals = new ApprovalManager(rules, { ask, write }, rulesPath);
-  // `toolsFull` carries the UNSLICED registry — createModelCommand re-slices
-  // it to each newly-selected profile's maxToolSurface on every /model swap
-  // (I1, fix round). `toolsInitial` is the slice for the profile main()
-  // starts on, so the very first Engine already respects it too.
-  const registryFull = builtinTools();
   const toolsFull = { registry: registryFull, ws, approvals };
   const toolsInitial = { registry: sliceTools(registryFull, profile.maxToolSurface), ws, approvals };
 
-  const provider = process.env.RAZIEL_FAKE === "1" ? new FakeProvider([["(fake reply)"]]) : providerForOrExit(profile);
   const engine = modelIsOverridden
     ? new Engine({ provider, store, model, tools: toolsInitial })
     : new Engine({ provider, store, profile, tools: toolsInitial });
   const engineBox: { current: Engine } = { current: engine };
 
-  const signalRef: { current: AbortController | null } = { current: null };
-  let rlClosed = false;
-  const handleSigint = makeSigintHandler({
-    signalRef,
-    isClosed: () => rlClosed,
-    exit: process.exit,
-    write: (s) => process.stdout.write(s),
-  });
-  // Piped/non-TTY stdin never fires readline's "SIGINT" event, so this stays registered.
-  process.on("SIGINT", handleSigint);
-
-  if (wantsTui()) {
-    await runTuiShell(signalRef);
-    return;
-  }
-
   if (process.stdout.isTTY) write(SIGIL);
   write(statusLine(store, model, provider.name));
-  const modelCmd = createModelCommand({ engineBox, store, initialProfile: profile, write, tools: toolsFull });
+  const profileBox: ProfileBox = { current: profile };
+  const modelCmd = createModelCommand({
+    engineBox, store, initialProfile: profile, write, tools: toolsFull,
+    onSwap: (info) => { profileBox.current = info.profile; },
+  });
   const approveCmd = createApproveCommand({ rules, rulesPath, write });
+  const sessionCmd = createSessionCommand({ engineBox, profileBox, tools: toolsFull, write });
+  const escalateCmd = createEscalateCommand({ engineBox, profileBox, modelCmd, write });
   const onCommand = (line: string): "handled" | "not-command" =>
-    modelCmd(line) === "handled" ? "handled" : approveCmd(line);
+    modelCmd(line) === "handled" ? "handled"
+    : approveCmd(line) === "handled" ? "handled"
+    : sessionCmd(line) === "handled" ? "handled"
+    : escalateCmd(line);
 
   const rl = createInterface({ input: process.stdin, output: process.stdout, prompt: "raziel> " });
   rl.on("close", () => { rlClosed = true; });
