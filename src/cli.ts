@@ -7,6 +7,18 @@ import { renderBook, listSessions } from "./book";
 
 const SIGIL = "   ╭───╮\n   │ ✧ │\n   ╰───╯\nraziel — keeper of the Book of Secrets\n";
 
+export function makeSigintHandler(deps: {
+  signalRef: { current: AbortController | null };
+  isClosed: () => boolean;
+  exit: (code: number) => void;
+  write: (s: string) => void;
+}): () => void {
+  return () => {
+    if (deps.signalRef.current) deps.signalRef.current.abort();
+    else { deps.write("\nbye\n"); deps.exit(0); }
+  };
+}
+
 export async function runRepl(opts: {
   engine: Engine;
   input: AsyncIterable<string>;
@@ -54,20 +66,22 @@ async function main(): Promise<void> {
   const engine = new Engine({ provider, store, model });
 
   const signalRef: { current: AbortController | null } = { current: null };
-  function onSigint(): void {
-    if (signalRef.current) signalRef.current.abort();
-    else { process.stdout.write("\nbye\n"); process.exit(0); }
-  }
+  let rlClosed = false;
+  const handleSigint = makeSigintHandler({
+    signalRef,
+    isClosed: () => rlClosed,
+    exit: process.exit,
+    write: (s) => process.stdout.write(s),
+  });
   // Piped/non-TTY stdin never fires readline's "SIGINT" event, so this stays registered.
-  process.on("SIGINT", onSigint);
+  process.on("SIGINT", handleSigint);
 
   if (process.stdout.isTTY) process.stdout.write(SIGIL);
   process.stdout.write(`raziel ▷ session ${store.id} · model ${model} · ${provider.name}\n`);
   const rl = createInterface({ input: process.stdin, output: process.stdout, prompt: "raziel> " });
-  let rlClosed = false;
   rl.on("close", () => { rlClosed = true; });
   // On a real TTY, readline intercepts Ctrl+C before process-level SIGINT ever fires.
-  rl.on("SIGINT", () => { onSigint(); if (!rlClosed) rl.prompt(); });
+  rl.on("SIGINT", () => { handleSigint(); if (!rlClosed) rl.prompt(); });
   rl.prompt();
   const input = (async function* () {
     for await (const line of rl) { yield String(line); if (!rlClosed) rl.prompt(); }

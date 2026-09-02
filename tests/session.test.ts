@@ -29,3 +29,9 @@ test("list returns ids newest first", () => {
   new SessionStore("2026-02-02T00-00-00Z").append(mkEvent("user_message", { text: "b" }));
   expect(SessionStore.list()[0]).toBe("2026-02-02T00-00-00Z");
 });
+
+test("list orders by mtime, not lexicographically (touch order matters)", () => {
+  new SessionStore("b-name").append(mkEvent("user_message", { text: "first" }));
+  new SessionStore("a-name").append(mkEvent("user_message", { text: "second" }));
+  expect(SessionStore.list()[0]).toBe("a-name");
+});

@@ -1,4 +1,4 @@
-import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { SessionEvent } from "./events";
@@ -37,10 +37,14 @@ export class SessionStore {
   }
 
   static list(): string[] {
-    return readdirSync(sessionsDir())
+    const dir = sessionsDir();
+    return readdirSync(dir)
       .filter((f) => f.endsWith(".jsonl"))
-      .map((f) => f.slice(0, -6))
-      .sort()
-      .reverse();
+      .map((f) => {
+        const id = f.slice(0, -6);
+        return { id, mtimeMs: statSync(join(dir, f)).mtimeMs };
+      })
+      .sort((a, b) => b.mtimeMs - a.mtimeMs || b.id.localeCompare(a.id))
+      .map((e) => e.id);
   }
 }

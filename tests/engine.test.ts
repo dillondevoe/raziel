@@ -120,3 +120,24 @@ test("provider error does not persist partial assistant_message", async () => {
   const types = stored.map((e) => e.type);
   expect(types).toEqual(["user_message", "error", "turn_end"]);
 });
+
+test("done chunk delivered in the same tick as abort still counts as end", async () => {
+  const store = new SessionStore("race1");
+  // Provider that flips the abort flag and THEN yields done in the same resumption,
+  // so the engine's loop sees aborted===true on the very delivery carrying done.
+  let ctl!: AbortController;
+  const p = {
+    name: "race",
+    async *stream(): AsyncIterable<{ type: "delta"; text: string } | { type: "done"; stopReason: "end" }> {
+      yield { type: "delta", text: "full" };
+      ctl.abort();                       // abort visible BEFORE the done chunk is dispatched
+      yield { type: "done", stopReason: "end" };
+    },
+  };
+  const eng = new Engine({ provider: p as any, store, model: "m" });
+  ctl = new AbortController();
+  for await (const _ of eng.send("go", { signal: ctl.signal })) { /* drain */ }
+  const end = store.replay().at(-1) as any;
+  expect(end.type).toBe("turn_end");
+  expect(end.stop).toBe("end");          // completed turn must not be mislabeled interrupt
+});

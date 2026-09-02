@@ -60,12 +60,9 @@ export class Engine {
 
     try {
       for await (const chunk of provider.stream({ model, system, messages: this.context(), signal: o?.signal })) {
-        if (o?.signal?.aborted) {
-          interrupted = true;
-          break;
-        }
+        if (chunk.type === "done") { sawDone = true; continue; }   // a delivered done is always recorded
+        if (o?.signal?.aborted) { interrupted = true; break; }
         if (chunk.type === "delta") { acc += chunk.text; yield { type: "assistant_delta", turn, text: chunk.text }; }
-        else if (chunk.type === "done") { sawDone = true; }
       }
       const stop = interrupted || (o?.signal?.aborted && !sawDone) ? "interrupt" : "end";
       yield* finish(stop);
