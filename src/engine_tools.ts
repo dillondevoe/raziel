@@ -1,24 +1,14 @@
 import { mkEvent, type EngineEvent, type SessionEvent } from "./events";
 import type { ChatMessage, Provider } from "./provider";
-import type { ApprovalManager } from "./approvals";
-import type { BuiltinTool } from "./tools/files";
 import { toolSpecs } from "./tools/registry";
-import type { Workspace } from "./tools/workspace";
-import { riskClassFor } from "./risk";
-import { argsHash } from "./tools/types";
-import { sanitizeForTerminal } from "./term";
+import { handleToolCall, type ToolCall, type ToolDeps } from "./engine_tool_call";
+
+export type { ToolDeps } from "./engine_tool_call";
 
 // R10 bound: max tool rounds per turn before the loop force-ends rather than
 // re-streaming forever against a provider that keeps calling tools.
 const MAX_ROUNDS = 8;
 
-export type ToolDeps = {
-  registry: Map<string, BuiltinTool>;
-  ws: Workspace;
-  approvals: ApprovalManager;
-};
-
-type ToolCall = { id: string; name: string; args: unknown };
 type Stop = "end" | "interrupt" | "error";
 
 export type RunToolTurnOpts = {
@@ -35,68 +25,6 @@ export type RunToolTurnOpts = {
   onDelta(text: string): void;
   finish(stop: Stop): EngineEvent[];
 };
-
-/** Runs the tool call through request → risk → approval → (recheck) → execute,
- * yielding every event on the way. The recomputed argsHash (R10) guards
- * against args mutated between the approval decision and execution — it
- * must equal the hash the decision was made against, or the call is refused
- * without running. */
-async function* handleToolCall(
-  call: ToolCall,
-  turn: string,
-  tools: ToolDeps,
-  tryAppend: (e: SessionEvent) => void,
-): AsyncGenerator<EngineEvent> {
-  const hash = argsHash(call.name, call.args);
-  const req = mkEvent("tool_request", {
-    turn, tool: call.name, args: call.args, requestId: call.id,
-    provenance: "provider_structured", argsHash: hash,
-  });
-  tryAppend(req);
-  yield req;
-
-  const risk = riskClassFor(call.name, call.args, tools.ws);
-  const areq = mkEvent("approval_request", { turn, requestId: call.id, tool: call.name, argsHash: hash, risk });
-  tryAppend(areq);
-  yield areq;
-
-  const { decision, argsHash: decidedHash } = await tools.approvals.decide(call.name, call.args, risk, tools.ws);
-  const adec = mkEvent("approval_decision", { requestId: call.id, decision });
-  tryAppend(adec);
-  yield adec;
-
-  const result = await execute(call, decision, decidedHash, tools);
-  const tres = mkEvent("tool_result", {
-    turn, tool: call.name, ok: result.ok, output: sanitizeForTerminal(result.output),
-    requestId: call.id, taint: "tool_output",
-  });
-  tryAppend(tres);
-  yield tres;
-}
-
-async function execute(
-  call: ToolCall,
-  decision: "allow" | "deny",
-  decidedHash: string,
-  tools: ToolDeps,
-): Promise<{ ok: boolean; output: string }> {
-  if (decision === "deny") return { ok: false, output: "denied by user" };
-
-  // R10: recompute from the args about to execute — must match what the
-  // decision was actually made against.
-  if (argsHash(call.name, call.args) !== decidedHash) {
-    return { ok: false, output: "argsHash mismatch — refusing" };
-  }
-
-  const tool = tools.registry.get(call.name);
-  if (!tool) return { ok: false, output: "unknown tool" };
-
-  try {
-    return await tool.run(call.args, tools.ws);
-  } catch (e) {
-    return { ok: false, output: e instanceof Error ? e.message : String(e) };
-  }
-}
 
 /** One provider.stream() round: yields assistant_delta events (via onDelta
  * for accumulation) and collects any tool_call chunks. Mirrors the M1a
@@ -169,7 +97,8 @@ export async function* runToolTurn(opts: RunToolTurnOpts): AsyncGenerator<Engine
 
     for (const call of roundResult.toolCalls) {
       if (signal?.aborted) { stop = "interrupt"; break; }
-      yield* handleToolCall(call, turn, tools, tryAppend);
+      const { aborted } = yield* handleToolCall(call, turn, tools, tryAppend, signal);
+      if (aborted) { stop = "interrupt"; break; }
     }
     if (stop === "interrupt") break;
 

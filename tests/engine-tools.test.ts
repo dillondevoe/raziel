@@ -234,3 +234,77 @@ test("abort signal set before any round starts yields interrupt (no tool activit
   expect(replayed.map((e) => e.type)).toEqual(["user_message", "turn_end"]);
   expect((replayed.at(-1) as any).stop).toBe("interrupt");
 });
+
+// --- Fix round: review findings ------------------------------------------
+
+test("[Critical] decide() rejecting is treated as deny — ok:false tool_result 'approval error: ...', turn completes without throwing", async () => {
+  const store = new SessionStore("t8");
+  const ws = mkws();
+  writeFileSync(join(ws.root, "x.txt"), "hi");
+  const registry = builtinTools();
+  const approvals = mkApprovals(async () => { throw new Error("disk full"); });
+  const provider = new ScriptedToolProvider([
+    { toolCalls: [{ name: "read_file", args: { path: "x.txt" } }] },
+    { delta: ["ok"] },
+  ]);
+
+  const eng = new Engine({ provider, store, model: "m", tools: { registry, ws, approvals } });
+  let threw = false;
+  try {
+    await drain(eng.send("go"));
+  } catch {
+    threw = true;
+  }
+  expect(threw).toBe(false);
+
+  const replayed = store.replay();
+  const tr = replayed.find((e) => e.type === "tool_result") as any;
+  expect(tr).toBeDefined();
+  expect(tr.ok).toBe(false);
+  expect(tr.output).toContain("approval error");
+  expect(tr.output).toContain("disk full");
+  expect((replayed.at(-1) as any).type).toBe("turn_end");
+});
+
+test("[Important] abort mid-approval-wait: tool never runs even though decide() later resolves 'allow'", async () => {
+  const store = new SessionStore("t9");
+  const ws = mkws();
+  writeFileSync(join(ws.root, "x.txt"), "hi");
+  let ran = 0;
+  const inner = builtinTools().get("read_file")!;
+  const spyRead: BuiltinTool = {
+    spec: inner.spec,
+    async run(args, w) { ran++; return inner.run(args, w); },
+  };
+  const registry = builtinTools();
+  registry.set("read_file", spyRead);
+
+  let resolveAsk!: (v: "allow") => void;
+  const askPromise = new Promise<"allow">((res) => { resolveAsk = res; });
+  const approvals = mkApprovals(() => askPromise as unknown as Promise<"allow" | "deny" | "always">);
+
+  const provider = new ScriptedToolProvider([
+    { toolCalls: [{ name: "read_file", args: { path: "x.txt" } }] },
+  ]);
+  const eng = new Engine({ provider, store, model: "m", tools: { registry, ws, approvals } });
+  const ctl = new AbortController();
+
+  const it = eng.send("go", { signal: ctl.signal })[Symbol.asyncIterator]();
+  const donePromise = (async () => {
+    const out: any[] = [];
+    let r = await it.next();
+    while (!r.done) { out.push(r.value); r = await it.next(); }
+    return out;
+  })();
+
+  // Give the engine a tick to reach the pending decide()/ask() before we abort.
+  await new Promise((r) => setTimeout(r, 20));
+  ctl.abort();
+  resolveAsk("allow");
+  await donePromise;
+
+  expect(ran).toBe(0);
+  const replayed = store.replay();
+  expect(replayed.some((e) => e.type === "tool_result" && (e as any).ok === true)).toBe(false);
+  expect((replayed.at(-1) as any).stop).toBe("interrupt");
+});
