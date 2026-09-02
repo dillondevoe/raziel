@@ -1,4 +1,4 @@
-import { mkEvent, type EngineEvent } from "./events";
+import { mkEvent, type EngineEvent, type SessionEvent } from "./events";
 import type { ChatMessage, Provider } from "./provider";
 import type { SessionStore } from "./session";
 
@@ -16,7 +16,7 @@ export class Engine {
     return msgs;
   }
 
-  private tryAppend(e: any): void {
+  private tryAppend(e: SessionEvent): void {
     try {
       this.opts.store.append(e);
     } catch {
@@ -42,6 +42,7 @@ export class Engine {
 
     let acc = "";
     let interrupted = false;
+    let sawDone = false;
 
     const finish = (stop: "end" | "interrupt" | "error"): EngineEvent[] => {
       const out: EngineEvent[] = [];
@@ -64,8 +65,10 @@ export class Engine {
           break;
         }
         if (chunk.type === "delta") { acc += chunk.text; yield { type: "assistant_delta", turn, text: chunk.text }; }
+        else if (chunk.type === "done") { sawDone = true; }
       }
-      yield* finish(interrupted ? "interrupt" : "end");
+      const stop = interrupted || (o?.signal?.aborted && !sawDone) ? "interrupt" : "end";
+      yield* finish(stop);
     } catch (err) {
       const e = mkEvent("error", { turn, message: err instanceof Error ? err.message : String(err) });
       this.tryAppend(e); yield e;

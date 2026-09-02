@@ -35,25 +35,30 @@ test("context includes prior turns (memory across turns)", async () => {
   expect(secondCall[1]!.content).toBe("one");
 });
 
-test("abort mid-stream logs partial message and interrupt turn_end", async () => {
+test("abort mid-stream (signal-honoring provider) logs partial message and interrupt turn_end", async () => {
   const store = new SessionStore("e3");
-  const provider = {
-    name: "test",
-    async *stream(opts: any) {
-      yield { type: "delta" as const, text: "a" };
-      yield { type: "delta" as const, text: "b" };
-      yield { type: "delta" as const, text: "c" };
-      if (!opts.signal?.aborted) yield { type: "done", stopReason: "end" };
-    }
-  };
-  const eng = new Engine({ provider: provider as any, store, model: "m" });
+  const provider = new FakeProvider([["a", "b", "c"]]);
+  const eng = new Engine({ provider, store, model: "m" });
   const ctl = new AbortController();
   for await (const e of eng.send("go", { signal: ctl.signal })) {
     if (e.type === "assistant_delta") ctl.abort();
   }
   const types = store.replay().map((e) => e.type);
   expect(types).toEqual(["user_message", "assistant_message", "turn_end"]);
+  expect((store.replay()[1] as any).text).toBe("a");
   expect((store.replay()[2] as any).stop).toBe("interrupt");
+});
+
+test("abort before any delta yields interrupt with no assistant_message (empty-interrupt asymmetry)", async () => {
+  const store = new SessionStore("e-zero");
+  const provider = new FakeProvider([["a", "b", "c"]]);
+  const eng = new Engine({ provider, store, model: "m" });
+  const ctl = new AbortController();
+  ctl.abort();
+  await drain(eng.send("go", { signal: ctl.signal }));
+  const types = store.replay().map((e) => e.type);
+  expect(types).toEqual(["user_message", "turn_end"]);
+  expect((store.replay().at(-1) as any).stop).toBe("interrupt");
 });
 
 test("provider throw becomes error event + error turn_end, does not throw", async () => {
@@ -76,15 +81,16 @@ test("store.append failure yields error event, never throws", async () => {
   expect(turnEnd?.stop).toBe("error");
 });
 
-test("signal abort after natural stream exhaustion is 'end', not 'interrupt'", async () => {
+test("signal abort after provider signals done is 'end', not 'interrupt'", async () => {
   let ctl: AbortController;
   const provider = {
     name: "test",
     async *stream() {
       yield { type: "delta" as const, text: "a" };
       yield { type: "delta" as const, text: "b" };
+      yield { type: "done" as const, stopReason: "end" as const };
       ctl!.abort();
-      // stream naturally ends, signal is already aborted
+      // provider already signaled done before the consumer's abort lands
     }
   };
   const store = new SessionStore("e-sig");

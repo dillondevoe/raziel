@@ -45,13 +45,17 @@ async function main(): Promise<void> {
   const engine = new Engine({ provider, store, model });
 
   const signalRef: { current: AbortController | null } = { current: null };
-  process.on("SIGINT", () => {
+  function onSigint(): void {
     if (signalRef.current) signalRef.current.abort();
     else { process.stdout.write("\nbye\n"); process.exit(0); }
-  });
+  }
+  // Piped/non-TTY stdin never fires readline's "SIGINT" event, so this stays registered.
+  process.on("SIGINT", onSigint);
 
   process.stdout.write(`raziel ▷ session ${store.id} · model ${model} · ${provider.name}\n`);
   const rl = createInterface({ input: process.stdin, output: process.stdout, prompt: "raziel> " });
+  // On a real TTY, readline intercepts Ctrl+C before process-level SIGINT ever fires.
+  rl.on("SIGINT", () => { onSigint(); rl.prompt(); });
   rl.prompt();
   const input = (async function* () {
     for await (const line of rl) { yield String(line); rl.prompt(); }
