@@ -142,18 +142,48 @@ test("createModelCommand: bare /model lists profiles and marks the current one",
 });
 
 test("createModelCommand: /model <id> swaps the engine and reprints the status line", () => {
+  const prevKey = process.env.ANTHROPIC_API_KEY;
   process.env.ANTHROPIC_API_KEY = "test-key";
-  const store = new SessionStore("model-swap");
-  const original = new Engine({ provider: new FakeProvider([[]]), store, model: "m" });
-  const engineBox = { current: original };
-  let out = "";
-  const cmd = createModelCommand({
-    engineBox, store, initialProfile: getProfile("qwen")!, write: (s) => { out += s; },
-  });
-  const result = cmd("/model sonnet");
-  expect(result).toBe("handled");
-  expect(engineBox.current).not.toBe(original);
-  expect(out).toContain("claude-sonnet-5");
+  try {
+    const store = new SessionStore("model-swap");
+    const original = new Engine({ provider: new FakeProvider([[]]), store, model: "m" });
+    const engineBox = { current: original };
+    let out = "";
+    const cmd = createModelCommand({
+      engineBox, store, initialProfile: getProfile("qwen")!, write: (s) => { out += s; },
+    });
+    const result = cmd("/model sonnet");
+    expect(result).toBe("handled");
+    expect(engineBox.current).not.toBe(original);
+    expect(out).toContain("claude-sonnet-5");
+  } finally {
+    if (prevKey === undefined) delete process.env.ANTHROPIC_API_KEY;
+    else process.env.ANTHROPIC_API_KEY = prevKey;
+  }
+});
+
+test("createModelCommand: /model <id> swap to an anthropic profile with no API key reports an error, does not swap, and does not kill the process", () => {
+  const prevKey = process.env.ANTHROPIC_API_KEY;
+  delete process.env.ANTHROPIC_API_KEY;
+  try {
+    const store = new SessionStore("model-swap-no-key");
+    const original = new Engine({ provider: new FakeProvider([[]]), store, model: "m" });
+    const engineBox = { current: original };
+    let out = "";
+    // Mirrors the qwen escalateTo:"sonnet" scenario: started on a keyless
+    // local profile, later tries to escalate to anthropic with no key set.
+    const cmd = createModelCommand({
+      engineBox, store, initialProfile: getProfile("qwen")!, write: (s) => { out += s; },
+    });
+    const result = cmd("/model sonnet");
+    expect(result).toBe("handled");
+    expect(engineBox.current).toBe(original); // no swap — qwen engine keeps working
+    expect(out).toContain("ANTHROPIC_API_KEY");
+    expect(out.split("\n").filter((l) => l.length > 0).length).toBe(1); // one-line error
+  } finally {
+    if (prevKey === undefined) delete process.env.ANTHROPIC_API_KEY;
+    else process.env.ANTHROPIC_API_KEY = prevKey;
+  }
 });
 
 test("createModelCommand: unknown profile id prints a one-line error and does not swap", () => {

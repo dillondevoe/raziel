@@ -24,17 +24,15 @@ export function makeSigintHandler(deps: {
   };
 }
 
-/** Builds the Provider for a profile. `"anthropic"` keeps the pre-M1a key
- * guard (fail fast, clean message, no stack trace); `"ollama"` takes an
- * optional injected fetch for tests; `"openai-compat"` reads its API key
- * from RAZIEL_COMPAT_KEY (undefined is fine for keyless local servers). */
+const MISSING_ANTHROPIC_KEY_MESSAGE = "ANTHROPIC_API_KEY not set (or use RAZIEL_FAKE=1)";
+
+/** Pure factory, one switch per provider kind. `"anthropic"` THROWS (never
+ * exits) on a missing key — a `/model` swap must report it and keep the
+ * current engine alive; startup fail-fast lives in providerForOrExit below. */
 export function providerFor(p: ModelProfile, fetchImpl?: typeof fetch): Provider {
   switch (p.provider) {
     case "anthropic": {
-      if (!process.env.ANTHROPIC_API_KEY) {
-        process.stderr.write("raziel: ANTHROPIC_API_KEY not set (or use RAZIEL_FAKE=1)\n");
-        process.exit(1);
-      }
+      if (!process.env.ANTHROPIC_API_KEY) throw new Error(MISSING_ANTHROPIC_KEY_MESSAGE);
       return new AnthropicProvider();
     }
     case "ollama":
@@ -44,20 +42,24 @@ export function providerFor(p: ModelProfile, fetchImpl?: typeof fetch): Provider
   }
 }
 
-/** Builds an Engine from a profile, threading its sampling params through. */
-function engineForProfile(profile: ModelProfile, store: SessionStore, provider: Provider): Engine {
-  return new Engine({ provider, store, profile });
+/** Startup call site: providerFor's error becomes a clean one-line stderr
+ * message + process exit, same shape as openSessionOrExit below. */
+function providerForOrExit(profile: ModelProfile): Provider {
+  try {
+    return providerFor(profile);
+  } catch (err) {
+    process.stderr.write(`raziel: ${err instanceof Error ? err.message : String(err)}\n`);
+    process.exit(1);
+  }
 }
 
 function statusLine(store: SessionStore, model: string, providerName: string): string {
   return `raziel ▷ session ${store.id} · model ${model} · ${providerName}\n`;
 }
 
-/** The real /model REPL command, wired into runRepl's onCommand hook.
- * Bare `/model` lists the registry (marking the current profile); `/model
- * <id>` rebuilds the Engine over the SAME SessionStore — the event log is
- * the continuity, a mid-session swap is legal by design. Unknown id ->
- * one-line error, no crash, no swap. */
+/** The real /model REPL command. Bare `/model` lists the registry (marking
+ * the current profile); `/model <id>` rebuilds the Engine over the SAME
+ * SessionStore. Unknown id or provider error -> one-line error, no swap. */
 export function createModelCommand(deps: {
   engineBox: { current: Engine };
   store: SessionStore;
@@ -85,8 +87,15 @@ export function createModelCommand(deps: {
       return "handled";
     }
 
-    const provider = buildProvider(next);
-    deps.engineBox.current = engineForProfile(next, deps.store, provider);
+    let provider: Provider;
+    try {
+      provider = buildProvider(next);
+    } catch (err) {
+      // Same UX as the unknown-id path: one-line error, no swap, no crash.
+      deps.write(`raziel: ${err instanceof Error ? err.message : String(err)}\n`);
+      return "handled";
+    }
+    deps.engineBox.current = new Engine({ provider, store: deps.store, profile: next });
     current = next;
     deps.write(statusLine(deps.store, next.model, provider.name));
     return "handled";
@@ -147,14 +156,13 @@ async function main(): Promise<void> {
     process.stderr.write(`raziel: unknown profile ${JSON.stringify(profileId)}\n`);
     process.exit(1);
   }
-  // --model is a raw-model override, back-compat for M0 smokes, and only
-  // applies on the anthropic path — --profile wins whenever both are given
-  // (a non-anthropic profile's own model/provider are never overridden).
+  // --model is a raw-model override (M0-smoke back-compat), anthropic-only —
+  // --profile wins whenever both are given.
   const modelOverride = arg("--model");
   const modelIsOverridden = profile.provider === "anthropic" && modelOverride !== undefined;
   const model = modelIsOverridden ? modelOverride : profile.model;
 
-  const provider = process.env.RAZIEL_FAKE === "1" ? new FakeProvider([["(fake reply)"]]) : providerFor(profile);
+  const provider = process.env.RAZIEL_FAKE === "1" ? new FakeProvider([["(fake reply)"]]) : providerForOrExit(profile);
   const engine = modelIsOverridden
     ? new Engine({ provider, store, model })
     : new Engine({ provider, store, profile });
