@@ -11,6 +11,7 @@ import { Workspace } from "./tools/workspace";
 import { builtinTools, sliceTools } from "./tools/registry";
 import { Rules } from "./rules";
 import { ApprovalManager } from "./approvals";
+import { TuiSurface, wantsTui } from "./tui/surface";
 
 export { providerFor, createModelCommand } from "./commands";
 
@@ -26,6 +27,22 @@ export function makeSigintHandler(deps: {
     if (deps.signalRef.current) deps.signalRef.current.abort();
     else { deps.write("\nbye\n"); deps.exit(0); }
   };
+}
+
+/** Boots the minimal TUI shell (Task 1 of M1c) — alt-screen + ctrl-c routing,
+ * no transcript/engine wiring yet (that's Task 5). Resolves once onQuit fires
+ * (idle ctrl-c), after which the surface has already been torn down. */
+async function runTuiShell(signalRef: { current: AbortController | null }): Promise<void> {
+  let resolveQuit!: () => void;
+  const quit = new Promise<void>((resolve) => { resolveQuit = resolve; });
+  const surface = new TuiSurface({
+    onInterrupt: () => signalRef.current?.abort(),
+    onQuit: () => resolveQuit(),
+    isStreaming: () => signalRef.current !== null,
+  });
+  surface.start();
+  await quit;
+  surface.stop();
 }
 
 export async function runRepl(opts: {
@@ -133,6 +150,11 @@ async function main(): Promise<void> {
   });
   // Piped/non-TTY stdin never fires readline's "SIGINT" event, so this stays registered.
   process.on("SIGINT", handleSigint);
+
+  if (wantsTui()) {
+    await runTuiShell(signalRef);
+    return;
+  }
 
   if (process.stdout.isTTY) write(SIGIL);
   write(statusLine(store, model, provider.name));
