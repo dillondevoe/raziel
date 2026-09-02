@@ -44,9 +44,16 @@ function sanitize(s: string): string {
  * only ever needs a readable preview. */
 function truncateToolOutput(output: string): string {
   const clean = sanitize(output);
-  if (clean.length <= TOOL_OUTPUT_MAX) return clean;
-  const extra = clean.length - TOOL_OUTPUT_MAX;
-  return `${clean.slice(0, TOOL_OUTPUT_MAX)}… (+${extra} chars, in session log)`;
+  // Cut by Unicode code point, not UTF-16 code unit: `Array.from(str)` splits
+  // on code points, so a boundary can never land inside a surrogate pair.
+  // A plain `clean.length`/`clean.slice()` cut is UTF-16-code-unit based and
+  // will emit a lone high surrogate when an astral emoji straddles the cut —
+  // malformed UTF-16 toward the terminal (fix-round I1, 2026-09-02). `N` in
+  // the tail counts code points removed, matching the unit counted above.
+  const codePoints = Array.from(clean);
+  if (codePoints.length <= TOOL_OUTPUT_MAX) return clean;
+  const extra = codePoints.length - TOOL_OUTPUT_MAX;
+  return `${codePoints.slice(0, TOOL_OUTPUT_MAX).join("")}… (+${extra} chars, in session log)`;
 }
 
 export type ToolCardEvent = {

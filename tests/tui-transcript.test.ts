@@ -97,6 +97,21 @@ test("tool output over 400 chars is truncated with a session-log tail", () => {
   expect(frame).not.toContain("x".repeat(500));
 });
 
+test("truncation is surrogate-safe: an emoji straddling the cut boundary is never split", () => {
+  const parent = new Container();
+  const transcript = new Transcript(parent);
+  // 399 "x" + one astral emoji (surrogate pair) + trailing text — the emoji
+  // sits exactly on the naive 400-UTF-16-code-unit cut boundary.
+  const longOutput = "x".repeat(399) + "\u{1F600}" + "more text after";
+
+  transcript.toolCard({ tool: "run_command", ok: true, phase: "result", output: longOutput });
+
+  const frame = parent.render(WIDTH).join("\n");
+  // No lone high surrogate anywhere in the frame.
+  expect(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/.test(frame)).toBe(false);
+  expect(frame).toContain("… (+15 chars, in session log)");
+});
+
 test("100-line transcript keeps follow-at-end — last line visible in final frame", () => {
   const parent = new Container();
   const transcript = new Transcript(parent);
