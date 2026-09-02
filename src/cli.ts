@@ -54,11 +54,13 @@ async function main(): Promise<void> {
 
   process.stdout.write(`raziel ▷ session ${store.id} · model ${model} · ${provider.name}\n`);
   const rl = createInterface({ input: process.stdin, output: process.stdout, prompt: "raziel> " });
+  let rlClosed = false;
+  rl.on("close", () => { rlClosed = true; });
   // On a real TTY, readline intercepts Ctrl+C before process-level SIGINT ever fires.
-  rl.on("SIGINT", () => { onSigint(); rl.prompt(); });
+  rl.on("SIGINT", () => { onSigint(); if (!rlClosed) rl.prompt(); });
   rl.prompt();
   const input = (async function* () {
-    for await (const line of rl) { yield String(line); rl.prompt(); }
+    for await (const line of rl) { yield String(line); if (!rlClosed) rl.prompt(); }
   })();
   await runRepl({ engine, input, write: (s) => process.stdout.write(s), signalRef });
   rl.close();
