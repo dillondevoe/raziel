@@ -35,12 +35,18 @@ async function main(): Promise<void> {
   const model = arg("--model") ?? "claude-sonnet-5";
   const provider = process.env.RAZIEL_FAKE === "1"
     ? new FakeProvider([["(fake reply)"]])
-    : new AnthropicProvider();
+    : (() => {
+      if (!process.env.ANTHROPIC_API_KEY) {
+        process.stderr.write("raziel: ANTHROPIC_API_KEY not set (or use RAZIEL_FAKE=1)\n");
+        process.exit(1);
+      }
+      return new AnthropicProvider();
+    })();
   const engine = new Engine({ provider, store, model });
 
   const signalRef: { current: AbortController | null } = { current: null };
   process.on("SIGINT", () => {
-    if (signalRef.current) { signalRef.current.abort(); signalRef.current = null; }
+    if (signalRef.current) signalRef.current.abort();
     else { process.stdout.write("\nbye\n"); process.exit(0); }
   });
 
