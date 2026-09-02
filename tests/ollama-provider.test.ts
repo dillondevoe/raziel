@@ -32,7 +32,7 @@ test("happy path: two content chunks then done, num_ctx defaults to 32768", asyn
   let sawDone = false;
   for await (const c of p.stream({ model: "qwen3.5:9b", messages: [{ role: "user", content: "hi" }] })) {
     if (c.type === "delta") deltas.push(c.text);
-    else { sawDone = true; expect(c.stopReason).toBe("end"); }
+    else if (c.type === "done") { sawDone = true; expect(c.stopReason).toBe("end"); }
   }
   expect(deltas).toEqual(["He", "y"]);
   expect(sawDone).toBe(true);

@@ -51,7 +51,7 @@ test("two content deltas + [DONE] map to delta chunks then a final done, and the
       let sawDone = false;
       for await (const c of p.stream({ model: "test-model", messages: [{ role: "user", content: "hi" }] })) {
         if (c.type === "delta") deltas.push(c.text);
-        else {
+        else if (c.type === "done") {
           sawDone = true;
           expect(c.stopReason).toBe("end");
         }

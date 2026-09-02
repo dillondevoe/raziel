@@ -6,7 +6,7 @@ test("fake provider yields scripted deltas then done, and records calls", async 
   const chunks: string[] = [];
   for await (const c of p.stream({ model: "m", messages: [{ role: "user", content: "hi" }] })) {
     if (c.type === "delta") chunks.push(c.text);
-    else expect(c.stopReason).toBe("end");
+    else if (c.type === "done") expect(c.stopReason).toBe("end");
   }
   expect(chunks.join("")).toBe("Hello");
   expect(p.calls[0]?.[0]?.content).toBe("hi");
