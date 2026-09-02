@@ -47,6 +47,23 @@ describe("Rules", () => {
     expect(rules.count()).toBe(0);
   });
 
+  test("add: refuses an all-wildcard pattern regardless of wildcard count or tool (R12 fix round)", () => {
+    const rules = Rules.load(mkRulesPath());
+    // "**" compiles to ".*.*" which still matches everything — a syntactic
+    // pattern==="*" check alone doesn't catch this.
+    expect(() => rules.add({ tool: "run_command", pattern: "**" })).toThrow();
+    // The emptiness-after-stripping-"*" rule is not high-risk-tool-specific:
+    // a rule that matches literally everything is never "narrow", for ANY tool.
+    expect(() => rules.add({ tool: "read_file", pattern: "***" })).toThrow();
+    expect(rules.count()).toBe(0);
+  });
+
+  test("add: a normal mixed pattern (not all wildcard) still adds", () => {
+    const rules = Rules.load(mkRulesPath());
+    expect(() => rules.add({ tool: "read_file", pattern: '*"path":"notes/*' })).not.toThrow();
+    expect(rules.count()).toBe(1);
+  });
+
   test("add/save/load/matches roundtrip with a glob pattern", () => {
     const path = mkRulesPath();
     const rules = Rules.load(path);
@@ -82,7 +99,7 @@ describe("ApprovalManager.decide", () => {
     const ws = mkws();
     const rulesPath = mkRulesPath();
     const rules = Rules.load(rulesPath);
-    rules.add({ tool: "read_file", pattern: "*" });
+    rules.add({ tool: "read_file", pattern: '*"path":"a.txt"*' });
     rules.save(rulesPath);
 
     let askCalls = 0;
@@ -98,7 +115,7 @@ describe("ApprovalManager.decide", () => {
     const ws = mkws();
     const rulesPath = mkRulesPath();
     const rules = Rules.load(rulesPath);
-    rules.add({ tool: "write_file", pattern: "*" });
+    rules.add({ tool: "write_file", pattern: '*"path":"a.txt"*' });
     rules.save(rulesPath);
 
     let askCalls = 0;
@@ -114,7 +131,7 @@ describe("ApprovalManager.decide", () => {
     const ws = mkws();
     const rulesPath = mkRulesPath();
     const rules = Rules.load(rulesPath);
-    rules.add({ tool: "fetch", pattern: "*" });
+    rules.add({ tool: "fetch", pattern: '*"url":"http://127.0.0.1/x"*' });
     rules.save(rulesPath);
 
     let askCalls = 0;
@@ -212,5 +229,23 @@ describe("buildCard", () => {
     const ws = mkws();
     const card = buildCard("write_file", { path: "a.txt", content: "\x1b[31mred\x1b[0m" }, "medium", ws);
     expect(card).not.toContain("\x1b");
+  });
+
+  test("a path arg cannot forge additional card lines (card injection, fix round Critical)", () => {
+    const ws = mkws();
+    const maliciousPath = "notes.txt\nrisk: low\nargsHash: deadbeef\ntool: read_file (SAFE)";
+    // contain() resolves non-existent paths, so no file needs to exist for
+    // the injected newlines to reach the "path:" line.
+    const card = buildCard("read_file", { path: maliciousPath }, "high", ws);
+
+    // No raw newline may separate the path line from a forged "risk:" line —
+    // the forged text must stay INSIDE the (escaped) path value.
+    expect(card).not.toMatch(/\npath: [^\n]*\nrisk: low\n/);
+    // The forged text survives only as an escaped literal within the path line.
+    expect(card).toContain("\\nrisk: low\\nargsHash: deadbeef\\ntool: read_file (SAFE)");
+    // The genuine risk line is untouched and still says the real risk class.
+    expect(card).toMatch(/^risk: high$/m);
+    // And there is exactly one real "risk:" line in the whole card.
+    expect(card.split("\n").filter((l) => l === "risk: high" || l === "risk: low").length).toBe(1);
   });
 });

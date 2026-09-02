@@ -3,13 +3,6 @@ import { canonicalJson } from "./tools/types";
 
 export type StandingRule = { tool: string; pattern: string };
 
-// Tools whose risk is ALWAYS "high" (or worse) in M1b, regardless of args.
-// A tool-wide ("*") standing rule on one of these can never legitimately
-// auto-allow anything (ApprovalManager only honors rule matches on
-// low/medium), so add() refuses to persist one at all — R12 narrow keys,
-// defense against a rule file that quietly grows a blanket high-risk grant.
-const ALWAYS_HIGH_RISK_TOOLS = new Set(["run_command"]);
-
 function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null;
 }
@@ -34,11 +27,22 @@ function globToRegExp(pattern: string): RegExp {
   return new RegExp(`^${out}$`);
 }
 
+// R12 narrow-keys, fixed semantically (fix round): a pattern made of ONLY
+// "*" characters matches everything regardless of how many wildcards it has
+// — a strict `pattern === "*"` check misses "**", "***", etc. (each extra
+// "*" just compiles to another no-op ".*" in the regex). And this isn't a
+// high-risk-tool-only concern: a rule that matches literally every call is
+// never "narrow", for ANY tool, so add() refuses it universally rather than
+// gating on a static high-risk tool set.
+function isAllWildcard(pattern: string): boolean {
+  return pattern.replace(/\*/g, "") === "";
+}
+
 /**
  * Standing approval rules, persisted as JSON. Loading never throws (R13
  * fail-closed posture extends to config: a corrupt rules file degrades to
- * "no standing rules", not a crash), and add() refuses to widen a
- * high-risk tool's grant to "*" (R12).
+ * "no standing rules", not a crash), and add() refuses any all-wildcard
+ * pattern — one that matches every call for a tool is never narrow (R12).
  */
 export class Rules {
   private rules: StandingRule[];
@@ -79,8 +83,10 @@ export class Rules {
   }
 
   add(rule: StandingRule): void {
-    if (rule.pattern === "*" && ALWAYS_HIGH_RISK_TOOLS.has(rule.tool)) {
-      throw new Error(`rules: refusing tool-wide "*" pattern for high-risk tool: ${rule.tool}`);
+    if (isAllWildcard(rule.pattern)) {
+      throw new Error(
+        `rules: refusing an all-wildcard pattern (matches everything, never narrow — R12): ${JSON.stringify(rule)}`,
+      );
     }
     this.rules.push(rule);
   }

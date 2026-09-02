@@ -8,11 +8,21 @@ function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null;
 }
 
-// Byte-exact display (R11): a raw \n or \r inside an arg value must never
-// reach the terminal as an actual line break / carriage return, where it
-// could visually forge extra card lines. Shown as the literal two
-// characters backslash-n / backslash-r instead.
-function escapeArgValue(s: string): string {
+// Byte-exact display (R11) AND the actual card-injection guard: a raw \n or
+// \r inside ANY value interpolated into the card must never reach the
+// terminal as a real line break, or it can forge extra "field: value" lines
+// indistinguishable from genuine ones (e.g. a `path` arg containing
+// "\nrisk: low\nargsHash: ..." rendered next to the real risk/hash fields).
+// Shown as the literal two characters backslash-n / backslash-r instead.
+//
+// Note: this is a no-op on canonicalJson(args) itself — JSON.stringify
+// already backslash-escapes \n/\r inside string leaves — so the real
+// enforcement point is values assembled OUTSIDE the JSON encoding, chiefly
+// the resolved `path:` line built from ws.contain()'s return value (which
+// happily "resolves" a not-yet-existing path containing raw newlines).
+// Applied uniformly to every interpolated line so no future field is
+// accidentally exempt.
+function escapeForCard(s: string): string {
   return s.replace(/\r/g, "\\r").replace(/\n/g, "\\n");
 }
 
@@ -26,9 +36,9 @@ export type ApprovalDeps = {
  * embedded \n/\r can't be mistaken for card structure. */
 export function buildCard(tool: string, args: unknown, risk: RiskClass, ws: Workspace): string {
   const hash = argsHash(tool, args);
-  const encodedArgs = escapeArgValue(canonicalJson(args));
+  const encodedArgs = escapeForCard(canonicalJson(args));
 
-  const lines = [`tool: ${tool}`, `risk: ${risk}`, `args: ${encodedArgs}`];
+  const lines = [`tool: ${escapeForCard(tool)}`, `risk: ${risk}`, `args: ${encodedArgs}`];
 
   if (isRecord(args) && typeof args.path === "string") {
     let resolved: string;
@@ -37,7 +47,7 @@ export function buildCard(tool: string, args: unknown, risk: RiskClass, ws: Work
     } catch {
       resolved = "ESCAPES WORKSPACE";
     }
-    lines.push(`path: ${resolved}`);
+    lines.push(`path: ${escapeForCard(resolved)}`);
   }
 
   lines.push(`argsHash: ${hash.slice(0, 8)}`);
