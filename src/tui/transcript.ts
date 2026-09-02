@@ -97,17 +97,29 @@ type OpenTurn = { text: Text; buffer: string };
 export class Transcript {
   private readonly open = new Map<string, OpenTurn>();
 
-  constructor(private readonly parent: Container) {}
+  /** `requestRender`, when given, fires after EVERY mutation below (fix-round
+   * C1: pi-tui only repaints on input/resize or an explicit requestRender()
+   * call — reference:264 — nothing in this class used to trigger one, so a
+   * scripted turn against a real terminal produced zero writes even though
+   * children were changing underneath it). Optional and pi-tui-agnostic —
+   * every existing single-arg call site/test is unaffected; app.ts is the
+   * only caller that wires the real `tui.requestRender()`. */
+  constructor(
+    private readonly parent: Container,
+    private readonly requestRender?: () => void,
+  ) {}
 
   /** "› text" */
   userLine(text: string): void {
     this.parent.addChild(new Text(`› ${sanitize(text)}`, 0, 0));
+    this.requestRender?.();
   }
 
   beginAssistant(turn: string): void {
     const text = new Text("", 0, 0);
     this.open.set(turn, { text, buffer: "" });
     this.parent.addChild(text);
+    this.requestRender?.();
   }
 
   /** Streams into the open assistant block in place — see class doc. */
@@ -116,11 +128,13 @@ export class Transcript {
     if (!entry) return;
     entry.buffer += sanitize(text);
     entry.text.setText(entry.buffer);
+    this.requestRender?.();
   }
 
   /** Finalize block: markdown-render the accumulated text (see class doc). */
   endAssistant(turn: string): void {
     this.finalize(turn);
+    this.requestRender?.();
   }
 
   /** One compact line-card per tool event. Collapsible is not v1 scope —
@@ -130,6 +144,7 @@ export class Transcript {
     const risk = evt.risk ? ` [${sanitize(evt.risk)}]` : "";
     if (evt.phase === "request") {
       this.parent.addChild(new Text(`→ ${tool}${risk}`, 0, 0));
+      this.requestRender?.();
       return;
     }
     const mark = evt.ok === false ? "✗" : "✓";
@@ -137,10 +152,12 @@ export class Transcript {
     if (evt.output !== undefined) {
       this.parent.addChild(new Text(`  ${truncateToolOutput(evt.output)}`, 0, 0));
     }
+    this.requestRender?.();
   }
 
   errorLine(msg: string): void {
     this.parent.addChild(new Text(`! ${sanitize(msg)}`, 0, 0));
+    this.requestRender?.();
   }
 
   /** Visible "· interrupted" marker. Also finalizes the turn's open block
@@ -149,6 +166,7 @@ export class Transcript {
   interruptMark(turn: string): void {
     this.finalize(turn);
     this.parent.addChild(new Text("· interrupted", 0, 0));
+    this.requestRender?.();
   }
 
   /** Swaps the open turn's streaming Text for a finalized Markdown render of

@@ -61,10 +61,20 @@ export function statusLine(store: SessionStore, model: string, providerName: str
  * already updated — M1c Task 5's TUI wiring uses it to refresh the
  * statusline and to let `/escalate` (which reuses this same swap path)
  * detect success without this function's return type having to change
- * from the plain "handled"/"not-command" every existing call site expects. */
+ * from the plain "handled"/"not-command" every existing call site expects.
+ *
+ * `deps.storeBox`, when given, is read (not `deps.store`) as the store the
+ * new Engine is built over, and both the engine and the printed statusLine
+ * use it (final-fix-round I1): without this, a prior `/session <id>` resume
+ * (src/tui/session_cmd.ts, which writes the SAME box) was silently reverted
+ * by the next `/model` swap — `deps.store` alone closes over whatever
+ * SessionStore main() started on, forever. `deps.store` remains required as
+ * the fallback for every pre-existing call site that never passes a
+ * storeBox at all (unaffected — same behavior as before this fix). */
 export function createModelCommand(deps: {
   engineBox: { current: Engine };
   store: SessionStore;
+  storeBox?: { current: SessionStore };
   initialProfile: ModelProfile;
   write: (s: string) => void;
   providerForFn?: typeof providerFor;
@@ -102,9 +112,10 @@ export function createModelCommand(deps: {
     const tools: ToolDeps | undefined = deps.tools
       ? { registry: sliceTools(deps.tools.registry, next.maxToolSurface), ws: deps.tools.ws, approvals: deps.tools.approvals }
       : undefined;
-    deps.engineBox.current = new Engine({ provider, store: deps.store, profile: next, tools });
+    const store = deps.storeBox?.current ?? deps.store; // I1: prefer a live-resumed session over the startup one
+    deps.engineBox.current = new Engine({ provider, store, profile: next, tools });
     current = next;
-    deps.write(statusLine(deps.store, next.model, provider.name));
+    deps.write(statusLine(store, next.model, provider.name));
     deps.onSwap?.({ profile: next, providerName: provider.name });
     return "handled";
   };

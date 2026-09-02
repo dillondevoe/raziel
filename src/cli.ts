@@ -13,7 +13,7 @@ import { Rules } from "./rules";
 import { ApprovalManager } from "./approvals";
 import { wantsTui } from "./tui/surface";
 import { runTuiApp } from "./tui/app";
-import { createSessionCommand, createEscalateCommand, type ProfileBox } from "./tui/session_cmd";
+import { createSessionCommand, createEscalateCommand, type ProfileBox, type StoreBox } from "./tui/session_cmd";
 
 export { providerFor, createModelCommand } from "./commands";
 
@@ -157,12 +157,15 @@ async function main(): Promise<void> {
   if (process.stdout.isTTY) write(SIGIL);
   write(statusLine(store, model, provider.name));
   const profileBox: ProfileBox = { current: profile };
+  // I1: shared with createSessionCommand — a /session resume must survive a
+  // later /model or /escalate swap in the plain REPL too, not just the TUI.
+  const storeBox: StoreBox = { current: store };
   const modelCmd = createModelCommand({
-    engineBox, store, initialProfile: profile, write, tools: toolsFull,
+    engineBox, store, storeBox, initialProfile: profile, write, tools: toolsFull,
     onSwap: (info) => { profileBox.current = info.profile; },
   });
   const approveCmd = createApproveCommand({ rules, rulesPath, write });
-  const sessionCmd = createSessionCommand({ engineBox, profileBox, tools: toolsFull, write });
+  const sessionCmd = createSessionCommand({ engineBox, profileBox, storeBox, tools: toolsFull, write });
   const escalateCmd = createEscalateCommand({ engineBox, profileBox, modelCmd, write });
   const onCommand = (line: string): "handled" | "not-command" =>
     modelCmd(line) === "handled" ? "handled"

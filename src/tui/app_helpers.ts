@@ -1,10 +1,18 @@
-import { Editor, type EditorTheme, Text, type TUI } from "@earendil-works/pi-tui";
+import { Editor, type EditorTheme, Text, type TUI, stripTerminalSequences } from "@earendil-works/pi-tui";
 import { sanitizeForTerminal } from "../term";
 import type { TuiAskUi } from "./approvals";
 
 // M1c Task 5 — small, independently-testable helpers pulled out of
 // src/tui/app.ts purely to keep that file under the 200-line budget. None of
 // these hold any TUI-app-shaped state of their own.
+//
+// Task 5 final-fix-round (M1): systemLine's text is command-router output —
+// includes echoed args (e.g. an unknown /model or /session id) — so it gets
+// the same belt-and-braces double-strip transcript.ts and status.ts use:
+// sanitizeForTerminal (src/term.ts) THEN pi-tui's own stripTerminalSequences.
+function sanitize(s: string): string {
+  return stripTerminalSequences(sanitizeForTerminal(s));
+}
 
 export const EDITOR_THEME: EditorTheme = {
   borderColor: (t) => t,
@@ -49,7 +57,7 @@ export function withCancelableAsk(ui: TuiAskUi): { ui: TuiAskUi; cancelPending()
  * paragraph, so embedded "\n" boundaries are preserved by splitting first
  * rather than trusting Text to treat them as line breaks). */
 export function systemLine(tui: TUI, s: string): void {
-  for (const line of sanitizeForTerminal(s).split("\n")) {
+  for (const line of sanitize(s).split("\n")) {
     if (line.length > 0) tui.addChild(new Text(line));
   }
   tui.requestRender();

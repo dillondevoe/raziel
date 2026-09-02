@@ -1,4 +1,4 @@
-import { type Component, Container } from "@earendil-works/pi-tui";
+import { type Component, Container, stripTerminalSequences } from "@earendil-works/pi-tui";
 import type { ModelProfile } from "../profiles";
 import { sanitizeForTerminal } from "../term";
 import { MAX_ROUNDS } from "../engine_tools";
@@ -17,6 +17,19 @@ import { MAX_ROUNDS } from "../engine_tools";
 // Task 5 fix-round (requirement B): "tool round N/8" used to hardcode the
 // round cap as a second literal duplicating engine_tools.ts's own MAX_ROUNDS
 // — imported here instead so the two can never drift apart.
+//
+// Task 5 final-fix-round (M1): same belt-and-braces double-strip
+// transcript.ts's `sanitize()` applies to every string that reaches a
+// pi-tui component — sanitizeForTerminal (src/term.ts) THEN pi-tui's own
+// stripTerminalSequences (reference §6) — applied here too, since the
+// session id setSession() accepts is not guaranteed to be a
+// containment-validated SessionStore id (Status's own API takes any
+// string).
+
+/** See the M1 note above: the same two-layer strip transcript.ts uses. */
+function sanitize(s: string): string {
+  return stripTerminalSequences(sanitizeForTerminal(s));
+}
 
 type Activity =
   | { kind: "idle" }
@@ -51,7 +64,15 @@ export class Status {
   private cachedWidth: number | undefined;
   private renderComponent: StatusRenderComponent;
 
-  constructor(parent: Container) {
+  /** `requestRender`, when given, fires after every setter below (fix-round
+   * C1: nothing here used to trigger a repaint, so "streaming Ns" never
+   * actually reached the terminal as it ticked — see Transcript's matching
+   * doc comment for the full reference:264 citation). Optional and
+   * pi-tui-agnostic; app.ts wires the real `tui.requestRender()`. */
+  constructor(
+    parent: Container,
+    private readonly requestRender?: () => void,
+  ) {
     this.renderComponent = new StatusRenderComponent(this);
     parent.addChild(this.renderComponent);
   }
@@ -68,11 +89,13 @@ export class Status {
     this.profile = p;
     this.providerName = providerName ?? p.provider;
     this.invalidateCache();
+    this.requestRender?.();
   }
 
   setSession(id: string): void {
     this.sessionId = id;
     this.invalidateCache();
+    this.requestRender?.();
   }
 
   setActivity(
@@ -84,6 +107,7 @@ export class Status {
       this.now = now;
     }
     this.invalidateCache();
+    this.requestRender?.();
   }
 
   invalidate(): void {
@@ -121,12 +145,12 @@ export class Status {
     // truncate the already-clean result to 8 chars — not the reverse. An id
     // containing an OSC/CSI escape sequence has its terminator well past the
     // first 8 raw characters; truncating first can slice the sequence in
-    // half, leaving stripTerminalSequences (inside sanitizeForTerminal, no
-    // terminator left to match) unable to remove the now-headless escape
-    // payload — visible garbage reaches the terminal instead of a clean
-    // 8-char id. Sanitizing the whole string first always removes the
-    // complete sequence regardless of where the 8-char cut later falls.
-    const cleanId = sanitizeForTerminal(this.sessionId);
+    // half, leaving the sanitizer (no terminator left in the truncated
+    // fragment to match) unable to remove the now-headless escape payload —
+    // visible garbage reaches the terminal instead of a clean 8-char id.
+    // Sanitizing the whole string first always removes the complete
+    // sequence regardless of where the 8-char cut later falls.
+    const cleanId = sanitize(this.sessionId);
     parts.push(`session ${cleanId.slice(0, 8)}`);
 
     if (this.activity.kind === "tool") {

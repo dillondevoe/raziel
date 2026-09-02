@@ -25,7 +25,8 @@ test("/session bare lists sessions (delegates to listSessions)", () => {
   const engineBox = { current: new Engine({ provider: new FakeProvider([[]]), store, model: "m" }) };
   const profileBox: ProfileBox = { current: getProfile("sonnet")! };
   let out = "";
-  const cmd = createSessionCommand({ engineBox, profileBox, write: (s) => { out += s; } });
+  const storeBox = { current: store };
+  const cmd = createSessionCommand({ engineBox, profileBox, storeBox, write: (s) => { out += s; } });
 
   const result = cmd("/session");
 
@@ -45,7 +46,8 @@ test("/session <id>: rebuilds the engine over that session's store, writes a res
   const profileBox: ProfileBox = { current: getProfile("sonnet")! };
   let out = "";
   const providerForFn = (() => new FakeProvider([["ok"]])) as unknown as ProviderForFn;
-  const cmd = createSessionCommand({ engineBox, profileBox, write: (s) => { out += s; }, providerForFn });
+  const storeBox = { current: store };
+  const cmd = createSessionCommand({ engineBox, profileBox, storeBox, write: (s) => { out += s; }, providerForFn });
 
   const result = cmd("/session target-session");
 
@@ -61,7 +63,8 @@ test("/session <id>: a subsequent turn appends to the OTHER session's file, not 
   const engineBox = { current: originEngine };
   const profileBox: ProfileBox = { current: getProfile("sonnet")! };
   const providerForFn = (() => new FakeProvider([["from other"]])) as unknown as ProviderForFn;
-  const cmd = createSessionCommand({ engineBox, profileBox, write: () => {}, providerForFn });
+  const storeBox = { current: store };
+  const cmd = createSessionCommand({ engineBox, profileBox, storeBox, write: () => {}, providerForFn });
 
   cmd("/session other-session");
   for await (const _e of engineBox.current.send("hello")) { /* drain */ }
@@ -79,7 +82,8 @@ test("/session <invalid-id>: one error line, no crash, engineBox untouched", () 
   const engineBox = { current: originEngine };
   const profileBox: ProfileBox = { current: getProfile("sonnet")! };
   let out = "";
-  const cmd = createSessionCommand({ engineBox, profileBox, write: (s) => { out += s; } });
+  const storeBox = { current: store };
+  const cmd = createSessionCommand({ engineBox, profileBox, storeBox, write: (s) => { out += s; } });
 
   const result = cmd("/session ../escape");
 
@@ -94,7 +98,8 @@ test("/session <unknown-but-valid-id>: one error line, no crash, engineBox untou
   const engineBox = { current: originEngine };
   const profileBox: ProfileBox = { current: getProfile("sonnet")! };
   let out = "";
-  const cmd = createSessionCommand({ engineBox, profileBox, write: (s) => { out += s; } });
+  const storeBox = { current: store };
+  const cmd = createSessionCommand({ engineBox, profileBox, storeBox, write: (s) => { out += s; } });
 
   const result = cmd("/session never-created-this-one");
 
@@ -107,7 +112,8 @@ test("/session: a non-/session line is not-command", () => {
   const store = new SessionStore("passthrough");
   const engineBox = { current: new Engine({ provider: new FakeProvider([[]]), store, model: "m" }) };
   const profileBox: ProfileBox = { current: getProfile("sonnet")! };
-  const cmd = createSessionCommand({ engineBox, profileBox, write: () => {} });
+  const storeBox = { current: store };
+  const cmd = createSessionCommand({ engineBox, profileBox, storeBox, write: () => {} });
   expect(cmd("hello there")).toBe("not-command");
 });
 
@@ -187,4 +193,47 @@ test("/escalate: a non-/escalate line is not-command", () => {
   const modelCmd = createModelCommand({ engineBox, store, initialProfile: getProfile("sonnet")!, write: () => {} });
   const escalateCmd = createEscalateCommand({ engineBox, profileBox, modelCmd, write: () => {} });
   expect(escalateCmd("hello there")).toBe("not-command");
+});
+
+// --- Final-fix-round I1: /session resume must survive a later /model swap ---
+
+test("(I1) resume session-b, then /model swap: turn lands in session-b's file, original untouched, statusline still shows b", async () => {
+  const prevKey = process.env.ANTHROPIC_API_KEY;
+  process.env.ANTHROPIC_API_KEY = "test-key";
+  try {
+    new SessionStore("session-b").append({ id: "e0", ts: new Date().toISOString(), type: "user_message", text: "prior" } as any);
+    const originStore = new SessionStore("session-origin");
+    const originEngine = new Engine({ provider: new FakeProvider([[]]), store: originStore, model: "m" });
+    const engineBox = { current: originEngine };
+    const profileBox: ProfileBox = { current: getProfile("qwen")! };
+    const storeBox = { current: originStore }; // SHARED between session_cmd and model_cmd
+    let out = "";
+    const write = (s: string) => { out += s; };
+
+    const providerForFn = (() => new FakeProvider([["after swap"]])) as unknown as ProviderForFn;
+    const sessionCmd = createSessionCommand({ engineBox, profileBox, storeBox, write, providerForFn });
+    const modelCmd = createModelCommand({
+      engineBox, store: originStore, storeBox, initialProfile: getProfile("qwen")!, write, providerForFn,
+      onSwap: (info) => { profileBox.current = info.profile; },
+    });
+
+    sessionCmd("/session session-b");
+    expect(storeBox.current.id).toBe("session-b");
+
+    out = "";
+    modelCmd("/model sonnet");
+    expect(storeBox.current.id).toBe("session-b"); // untouched by the /model swap
+    expect(out).toContain("session session-b"); // statusLine() used the resumed store, not the original
+
+    for await (const _e of engineBox.current.send("hello")) { /* drain */ }
+
+    const sessionBEvents = new SessionStore("session-b").replay();
+    expect(sessionBEvents.some((e) => e.type === "assistant_message" && (e as any).text === "after swap")).toBe(true);
+
+    const originEvents = new SessionStore("session-origin").replay();
+    expect(originEvents.length).toBe(0); // nothing ever landed in the session /session left behind
+  } finally {
+    if (prevKey === undefined) delete process.env.ANTHROPIC_API_KEY;
+    else process.env.ANTHROPIC_API_KEY = prevKey;
+  }
 });

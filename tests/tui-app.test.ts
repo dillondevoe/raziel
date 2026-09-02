@@ -247,3 +247,83 @@ test("/escalate on the qwen profile swaps to sonnet — engineBox identity chang
     else process.env.ANTHROPIC_API_KEY = prevKey;
   }
 });
+
+
+// --- Final-fix-round C1: the TUI must actually repaint a real terminal ---
+//
+// Both tests below are deliberately structured so the ONLY thing that could
+// produce a new terminal write in the measured window is the component
+// under test's own injected requestRender call — not the incidental render
+// pi-tui's Editor triggers internally on its own text changes (confirmed by
+// grep: editor.js calls `this.tui.requestRender()` from several of its own
+// key handlers), and not the one-time initial render `tui.start()` itself
+// schedules at boot (which fires AFTER onReady's synchronous mounting, so it
+// already captures whatever's mounted regardless of any component's own
+// wiring — a real gotcha that made an earlier draft of these tests pass
+// even with the fix reverted). Every `waitFor` here polls ONLY
+// `terminal.writes` — never `handles.tui.render()`/`renderNow()`.
+
+test("(C1) a delta arriving well after the turn's initial (editor-incidental) render has settled still reaches the terminal on its own", async () => {
+  const terminal = makeStubTerminal();
+  // Real gap between deltas: long enough that the editor's own
+  // submit-triggered render (Editor.setText("") -> tui.requestRender())
+  // fires and fully settles BEFORE the second delta arrives, so nothing
+  // else is pending when it does.
+  const provider: Provider = {
+    name: "delayed",
+    async *stream(opts) {
+      yield { type: "delta", text: "first-chunk " };
+      await new Promise((r) => setTimeout(r, 80));
+      if (opts.signal?.aborted) return;
+      yield { type: "delta", text: "SECOND-UNIQUE-CHUNK" };
+      if (!opts.signal?.aborted) yield { type: "done", stopReason: "end" };
+    },
+  };
+  const deps = { ...baseDeps(provider), terminal };
+  const { surface, ready } = createTuiApp(deps);
+  surface.start();
+  try {
+    const handles = await ready;
+    void handles;
+    handles.editor.onSubmit?.("go");
+
+    await waitFor(() => terminal.writes.join("").includes("first-chunk"));
+    await new Promise((r) => setTimeout(r, 40)); // let that render fully quiesce — no pending timers left
+    const settledWrites = terminal.writes.length;
+    expect(terminal.writes.join("")).not.toContain("SECOND-UNIQUE-CHUNK");
+
+    // Nothing else happens in this window (no editor call, no terminal
+    // input) — only Transcript.appendDelta's own requestRender can make
+    // this marker land.
+    await waitFor(() => terminal.writes.join("").includes("SECOND-UNIQUE-CHUNK"), 600);
+    expect(terminal.writes.length).toBeGreaterThan(settledWrites);
+  } finally {
+    surface.stop();
+  }
+});
+
+test("(C1) Status.setActivity's own requestRender reaches the terminal with zero editor interaction", async () => {
+  const terminal = makeStubTerminal();
+  const provider = new ScriptedToolProvider([{ delta: ["unused"] }]);
+  const deps = { ...baseDeps(provider), terminal };
+  const { surface, ready } = createTuiApp(deps);
+  surface.start();
+  try {
+    const handles = await ready;
+    // Let the initial mount render (tui.start()'s own scheduled call, which
+    // fires after onReady's synchronous mounting and so already captures
+    // Status's content regardless of Status's own wiring) fully settle.
+    await new Promise((r) => setTimeout(r, 40));
+    const baseline = terminal.writes.length;
+    expect(terminal.writes.join("")).not.toContain("tool round 5");
+
+    // No editor.onSubmit anywhere in this test — a direct call on the
+    // exposed handle is the ONLY thing that changes.
+    handles.status.setActivity({ kind: "tool", round: 5 });
+
+    await waitFor(() => terminal.writes.join("").includes("tool round 5"));
+    expect(terminal.writes.length).toBeGreaterThan(baseline);
+  } finally {
+    surface.stop();
+  }
+});

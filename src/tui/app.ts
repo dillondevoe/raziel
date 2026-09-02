@@ -10,7 +10,7 @@ import type { Provider } from "../provider";
 import type { Rules } from "../rules";
 import { ApprovalManager } from "../approvals";
 import { createModelCommand, createApproveCommand, providerFor } from "../commands";
-import { createSessionCommand, createEscalateCommand, type ProfileBox } from "./session_cmd";
+import { createSessionCommand, createEscalateCommand, type ProfileBox, type StoreBox } from "./session_cmd";
 import { Transcript } from "./transcript";
 import { Status } from "./status";
 import { makeTuiAsk, makeTuiAskUi } from "./approvals";
@@ -31,12 +31,10 @@ import { EDITOR_THEME, withCancelableAsk, systemLine, adaptEditorToLines } from 
 // document" mode. That mode already wraps `this.children` in its OWN
 // internal ScrollView({follow:"end", primary:true}) (verified in
 // tui-alt-screen.js) — the exact follow-at-end behavior the reference
-// recommends, for free, with zero hand-rolled ScrollView/VStack. The other
-// option (setLayoutRoot + an explicit ScrollView) was rejected because
-// TuiAltScreen.getMountedRoots() returns EITHER `layoutRoot` OR
-// `this.children`, never both — calling setLayoutRoot would silently stop
-// rendering the approval card, which Task 3's makeTuiAskUi mounts via
-// tui.addChild() and which this file must not modify.
+// recommends, for free. setLayoutRoot was rejected: TuiAltScreen.getMountedRoots()
+// returns EITHER `layoutRoot` OR `this.children`, never both — it would
+// silently stop rendering the approval card, which makeTuiAskUi (Task 3,
+// unmodified) mounts via tui.addChild().
 
 export type TuiAppDeps = {
   /** Injectable; defaults to a real ProcessTerminal (TTY-only) when omitted. */
@@ -61,6 +59,8 @@ export type TuiAppHandles = {
   transcript: Transcript;
   status: Status;
   engineBox: { current: Engine };
+  /** The live session store /model, /session, /escalate share (I1). */
+  storeBox: StoreBox;
   /** Resolves once the main loop exits (a "/quit" line, or the loop's input
    * source ending) — distinct from ctrl-c-while-idle quitting, which never
    * touches the loop at all. */
@@ -100,8 +100,12 @@ export function createTuiApp(deps: TuiAppDeps): { surface: TuiSurface; ready: Pr
     onQuit: () => resolveQuit(),
     isStreaming: () => signalRef.current !== null,
     onReady: (tui) => {
-      const transcript = new Transcript(tui);
-      const status = new Status(tui);
+      // C1: Transcript/Status repaint via an injected callback (see their
+      // own doc comments) — app.ts wires the REAL tui.requestRender() here,
+      // the one thing missing before (reference:264: pi-tui only repaints
+      // on input/resize or an explicit requestRender() call).
+      const transcript = new Transcript(tui, () => tui.requestRender());
+      const status = new Status(tui, () => tui.requestRender());
       status.setProfile(deps.profile, deps.provider.name);
       status.setSession(deps.store.id);
 
@@ -121,10 +125,15 @@ export function createTuiApp(deps: TuiAppDeps): { surface: TuiSurface; ready: Pr
         current: new Engine({ provider: deps.provider, store: deps.store, profile: deps.profile, tools: tools0 }),
       };
       const profileBox: ProfileBox = { current: deps.profile };
+      // I1: shared with createModelCommand — whichever of /model, /session,
+      // /escalate swapped last wins for BOTH, so a /session resume is never
+      // silently reverted by a later /model swap.
+      const storeBox: StoreBox = { current: deps.store };
 
       const modelCmd = createModelCommand({
         engineBox,
         store: deps.store,
+        storeBox,
         initialProfile: deps.profile,
         write,
         providerForFn: deps.providerForFn,
@@ -138,6 +147,7 @@ export function createTuiApp(deps: TuiAppDeps): { surface: TuiSurface; ready: Pr
       const sessionCmd = createSessionCommand({
         engineBox,
         profileBox,
+        storeBox,
         tools: toolsFull,
         providerForFn: deps.providerForFn,
         write,
@@ -172,7 +182,7 @@ export function createTuiApp(deps: TuiAppDeps): { surface: TuiSurface; ready: Pr
         .catch((err) => write(`raziel: ${err instanceof Error ? err.message : String(err)}`))
         .finally(resolveQuit);
 
-      resolveReady({ tui, editor, transcript, status, engineBox, loopDone });
+      resolveReady({ tui, editor, transcript, status, engineBox, storeBox, loopDone });
     },
   });
 
