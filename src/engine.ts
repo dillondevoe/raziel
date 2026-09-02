@@ -12,6 +12,7 @@ export class Engine {
   private system?: string;
   private model: string;
   private sampling?: { temperature?: number; topP?: number };
+  private contextTokens?: number;
 
   constructor(opts: EngineOpts) {
     this.provider = opts.provider;
@@ -20,6 +21,7 @@ export class Engine {
     if (opts.profile) {
       this.model = opts.profile.model;
       this.sampling = opts.profile.sampling;
+      this.contextTokens = opts.profile.contextTokens;
     } else {
       this.model = opts.model;
     }
@@ -43,7 +45,7 @@ export class Engine {
   }
 
   async *send(text: string, o?: { signal?: AbortSignal }): AsyncIterable<EngineEvent> {
-    const { store, provider, model, system, sampling } = this;
+    const { store, provider, model, system, sampling, contextTokens } = this;
     const turn = `turn-${crypto.randomUUID()}`;
     const user = mkEvent("user_message", { text });
     try {
@@ -77,7 +79,7 @@ export class Engine {
     };
 
     try {
-      for await (const chunk of provider.stream({ model, system, messages: this.context(), signal: o?.signal, sampling })) {
+      for await (const chunk of provider.stream({ model, system, messages: this.context(), signal: o?.signal, sampling, contextTokens })) {
         if (chunk.type === "done") { sawDone = true; continue; }   // a delivered done is always recorded
         if (o?.signal?.aborted) { interrupted = true; break; }
         if (chunk.type === "delta") { acc += chunk.text; yield { type: "assistant_delta", turn, text: chunk.text }; }

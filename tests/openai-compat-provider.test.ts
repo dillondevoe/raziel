@@ -132,6 +132,47 @@ test("abort after first delta: no further chunks, no done", async () => {
   );
 }, 2000);
 
+test("abort right after the first delta with the rest of the burst already buffered: no further chunks, no done (I2)", async () => {
+  await withFakeServer(
+    () => {
+      const encoder = new TextEncoder();
+      // Twin of ollama-provider.test.ts's abort test: every event enqueued
+      // synchronously in one burst (no setTimeout), so by the time our
+      // consumer calls ctl.abort() after the first delta, the remaining
+      // events are already sitting in pi-ai's internal event queue.
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(encoder.encode(sseChunk(makeChatChunk({ role: "assistant", content: "a" }))));
+          controller.enqueue(encoder.encode(sseChunk(makeChatChunk({ content: "b" }))));
+          controller.enqueue(encoder.encode(sseChunk(makeChatChunk({}, "stop"))));
+          controller.enqueue(encoder.encode("data: [DONE]\n\n"));
+          controller.close();
+        },
+      });
+      return new Response(body, { status: 200, headers: { "content-type": "text/event-stream" } });
+    },
+    async (baseUrl) => {
+      const p = new OpenAICompatProvider({ baseUrl, apiKey: "test-key" });
+      const ctl = new AbortController();
+      const got: string[] = [];
+      let sawDone = false;
+      for await (const c of p.stream({
+        model: "test-model",
+        messages: [{ role: "user", content: "hi" }],
+        signal: ctl.signal,
+      })) {
+        if (c.type === "delta") {
+          got.push(c.text);
+          ctl.abort();
+        }
+        if (c.type === "done") sawDone = true;
+      }
+      expect(got).toEqual(["a"]);
+      expect(sawDone).toBe(false);
+    },
+  );
+}, 2000);
+
 // --- mapEvent unit coverage (event-mapping layer, verbatim pi-ai event shapes) ---
 // Belt-and-suspenders alongside the fake-server route above: exercises contentIndex
 // interleaving and the thinking_*/toolcall_* ignore-path directly, which the fake

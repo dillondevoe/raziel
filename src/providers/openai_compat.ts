@@ -115,6 +115,11 @@ export class OpenAICompatProvider implements Provider {
     });
 
     for await (const ev of events) {
+      // pi-ai's stream() only checks the abort signal after its own network
+      // loop drains — an already-buffered text_delta/done (parsed from the
+      // same read as an earlier delta) still arrives here after abort()
+      // fires. Guard every iteration, mirroring the ollama provider.
+      if (opts.signal?.aborted) return;
       const r = mapEvent(ev);
       if (r.kind === "skip") continue;
       if (r.kind === "throw") throw r.error;

@@ -23,6 +23,14 @@ const REGISTRY: ModelProfile[] = [
     parser: "native", sampling: { temperature: 0.7, topP: 0.8 }, streamingTools: false,
     escalateTo: "sonnet" },
 ];
+// Freeze every entry (+ its sampling sub-object) and the registry array
+// itself, so callers can't mutate the registry's live objects out from
+// under later readers (getProfile/listProfiles hand back the same refs).
+for (const p of REGISTRY) {
+  if (p.sampling) Object.freeze(p.sampling);
+  Object.freeze(p);
+}
+Object.freeze(REGISTRY);
 
 export function getProfile(id: string): ModelProfile | undefined {
   return REGISTRY.find((p) => p.id === id);

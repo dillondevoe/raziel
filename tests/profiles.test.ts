@@ -42,3 +42,17 @@ test("listProfiles returns every registry entry", () => {
 test("defaultProfileId is sonnet", () => {
   expect(defaultProfileId()).toBe("sonnet");
 });
+
+test("registry entries are frozen — a caller can't mutate the live objects (M9)", () => {
+  // ES modules are always strict mode, so a mutation attempt on a frozen
+  // object throws TypeError rather than silently no-op-ing.
+  const sonnet = getProfile("sonnet")!;
+  expect(() => { (sonnet as any).model = "tampered"; }).toThrow();
+  expect(getProfile("sonnet")!.model).toBe("claude-sonnet-5");
+
+  const qwen = getProfile("qwen")!;
+  expect(() => { (qwen.sampling as any).temperature = 999; }).toThrow();
+  expect(getProfile("qwen")!.sampling).toEqual({ temperature: 0.7, topP: 0.8 });
+
+  expect(() => { (listProfiles() as any).push({}); }).toThrow();
+});
