@@ -28,9 +28,11 @@ async function withFakeServer(
   }
 }
 
-test("two content deltas + [DONE] map to delta chunks then a final done", async () => {
+test("two content deltas + [DONE] map to delta chunks then a final done, and the request caps max tokens", async () => {
+  let capturedBody: Record<string, unknown> | undefined;
   await withFakeServer(
-    () => {
+    async (req) => {
+      capturedBody = (await req.json()) as Record<string, unknown>;
       const encoder = new TextEncoder();
       const body = new ReadableStream<Uint8Array>({
         start(controller) {
@@ -58,6 +60,14 @@ test("two content deltas + [DONE] map to delta chunks then a final done", async 
       expect(sawDone).toBe(true);
     },
   );
+
+  // Regression: DEFAULT_MAX_TOKENS was set on Model.maxTokens only, which pi-ai's
+  // buildParams never reads for the max-tokens field (it reads StreamOptions.maxTokens) —
+  // so no cap reached the wire. Assert on whichever field name pi-ai emits for this
+  // (unrecognized, so generic-compat) baseUrl.
+  expect(capturedBody).toBeDefined();
+  const maxTokensValue = capturedBody?.max_tokens ?? capturedBody?.max_completion_tokens;
+  expect(maxTokensValue).toBe(8192);
 });
 
 test("401 JSON error response rejects the async iteration (THROW path)", async () => {

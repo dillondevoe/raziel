@@ -107,6 +107,10 @@ export class OpenAICompatProvider implements Provider {
       apiKey: this.apiKey ?? KEYLESS_API_KEY,
       signal: opts.signal,
       temperature: opts.sampling?.temperature,
+      // buildParams reads maxTokens off StreamOptions (this object), not Model.maxTokens —
+      // the latter is only consulted inside the reasoning-budget path, which is always off
+      // here (model.reasoning === false). Without this, no token cap reaches the wire.
+      maxTokens: DEFAULT_MAX_TOKENS,
       ...(Object.keys(samplingParams).length > 0 ? { samplingParams } : {}),
     });
 
