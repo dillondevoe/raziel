@@ -7,10 +7,11 @@ import { SessionStore } from "../src/session";
 import { Workspace } from "../src/tools/workspace";
 import { Rules } from "../src/rules";
 import { ApprovalManager } from "../src/approvals";
-import { builtinTools, toolSpecs } from "../src/tools/registry";
+import { builtinTools, toolSpecs, sliceTools } from "../src/tools/registry";
 import { writeFileTool } from "../src/tools/files";
 import type { BuiltinTool } from "../src/tools/files";
 import type { ChatMessage, Provider, StreamChunk } from "../src/provider";
+import { getProfile } from "../src/profiles";
 
 beforeEach(() => { process.env.RAZIEL_HOME = mkdtempSync(join(tmpdir(), "raziel-test-")); });
 
@@ -64,6 +65,29 @@ test("registry: builtinTools has all 7 in insertion order; toolSpecs maps to spe
   ]);
   const specs = toolSpecs(registry);
   expect(specs.map((s) => s.name)).toEqual([...registry.keys()]);
+});
+
+// --- Fix round (I1): profile maxToolSurface enforcement ------------------
+
+test("sliceTools: takes the first N entries in insertion order", () => {
+  const registry = builtinTools();
+  const sliced = sliceTools(registry, 3);
+  expect([...sliced.keys()]).toEqual(["read_file", "write_file", "edit_file"]);
+});
+
+test("an Engine built with the qwen profile's sliced registry advertises exactly 6 tool specs", async () => {
+  const store = new SessionStore("slice-qwen");
+  const ws = mkws();
+  const qwen = getProfile("qwen")!;
+  expect(qwen.maxToolSurface).toBe(6);
+  const registry = sliceTools(builtinTools(), qwen.maxToolSurface);
+  const approvals = mkApprovals(async () => "allow");
+  const provider = new ScriptedToolProvider([{ delta: ["hi"] }]);
+
+  const eng = new Engine({ provider, store, model: "m", tools: { registry, ws, approvals } });
+  await drain(eng.send("hi"));
+
+  expect((provider.toolsLog[0] as any[]).length).toBe(6);
 });
 
 test("single tool round: read_file executes, exact event sequence, tool_result carries file content", async () => {

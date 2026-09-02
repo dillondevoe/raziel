@@ -28,12 +28,20 @@ async function* hang(): AsyncGenerator<string> {
   yield "unreachable";
 }
 
+/** Yields `ls` only after `ms` — used to arrange a line that genuinely
+ * arrives AFTER a short deny-timeout has already fired (I4, fix round). */
+async function* delayed(ms: number, ...ls: string[]): AsyncGenerator<string> {
+  await new Promise((r) => setTimeout(r, ms));
+  for (const l of ls) yield l;
+}
+
 /** Per-round scripted provider (Task 6 pattern): round i yields that
  * round's tool calls / delta text, giving exact control over how many
  * tool_call rounds a scripted turn produces (unlike FakeProvider.scriptTool,
  * which re-advertises forever). */
 class ScriptedToolProvider implements Provider {
   readonly name = "scripted";
+  toolsLog: unknown[] = [];
   private i = 0;
   constructor(private rounds: { delta?: string[]; toolCalls?: { name: string; args: unknown }[] }[]) {}
 
@@ -41,6 +49,7 @@ class ScriptedToolProvider implements Provider {
     model: string; system?: string; messages: ChatMessage[]; signal?: AbortSignal;
     sampling?: unknown; contextTokens?: number; tools?: unknown;
   }): AsyncIterable<StreamChunk> {
+    this.toolsLog.push(opts.tools);
     const round = this.rounds[Math.min(this.i, this.rounds.length - 1)] ?? {};
     this.i++;
     for (const text of round.delta ?? []) {
@@ -434,4 +443,107 @@ test("createModelCommand: a non-/model line is not-command", () => {
   const engineBox = { current: new Engine({ provider: new FakeProvider([[]]), store, model: "m" }) };
   const cmd = createModelCommand({ engineBox, store, initialProfile: getProfile("sonnet")!, write: () => {} });
   expect(cmd("hello there")).toBe("not-command");
+});
+
+// --- Fix round (whole-branch review): I1, I2, I3, I4 ---------------------
+
+test("(I1) /model swap re-slices the tool registry to the new profile's maxToolSurface", async () => {
+  const ws = mkWorkspaceWithFile("hello.txt", "hello world");
+  const registryFull = builtinTools(); // 7 builtins
+  const rulesPath = join(razielHome(), "rules.json");
+  const rules = Rules.load(rulesPath);
+  const approvals = new ApprovalManager(rules, { ask: async () => "allow" }, rulesPath);
+  const store = new SessionStore("cli-slice-swap");
+
+  const providerA = new ScriptedToolProvider([{ delta: ["hi"] }]);
+  const engineA = new Engine({ provider: providerA, store, model: "m-a", tools: { registry: registryFull, ws, approvals } });
+  const engineBox = { current: engineA };
+
+  const providerB = new ScriptedToolProvider([{ delta: ["hi2"] }]);
+  const providerForFn: typeof providerFor = () => providerB;
+
+  const modelCmd = createModelCommand({
+    engineBox, store, initialProfile: getProfile("sonnet")!, write: () => {}, providerForFn,
+    tools: { registry: registryFull, ws, approvals },
+  });
+
+  modelCmd("/model qwen"); // qwen.maxToolSurface === 6
+  for await (const _e of engineBox.current.send("hi")) { /* drain */ }
+
+  expect((providerB.toolsLog.at(-1) as any[]).length).toBe(6);
+});
+
+test("(I2) 'always' on args containing a literal '*' allows the call but does not persist a rule", async () => {
+  const ws = mkWorkspaceWithFile("hello.txt", "hello world");
+  const registry = builtinTools();
+  const rulesPath = join(razielHome(), "rules.json");
+  const rules = Rules.load(rulesPath);
+  const input = lines("write it", "a", "/quit");
+  let out = "";
+  const write = (s: string) => { out += s; };
+  const ask = createAsk({ write, readLine: async () => { const r = await input.next(); return r.done ? undefined : r.value; } });
+  const approvals = new ApprovalManager(rules, { ask, write }, rulesPath);
+  const store = new SessionStore("cli-star-always");
+  const provider = new ScriptedToolProvider([
+    { toolCalls: [{ name: "write_file", args: { path: "out.txt", content: "*" } }] },
+    { delta: ["done"] },
+  ]);
+  const engine = new Engine({ provider, store, model: "m", tools: { registry, ws, approvals } });
+
+  await runRepl({ engine: { current: engine }, input, write });
+
+  const tr = store.replay().find((e) => e.type === "tool_result") as any;
+  expect(tr.ok).toBe(true); // the single call was still allowed
+  expect(existsSync(rulesPath)).toBe(false); // but nothing was persisted
+  expect(out).toContain("not saved");
+
+  // An identical second call must prompt again — no rule exists to auto-allow it.
+  let askCalls = 0;
+  const ask2 = async (card: string, risk: any) => { askCalls++; return "deny" as const; };
+  const approvals2 = new ApprovalManager(Rules.load(rulesPath), { ask: ask2 }, rulesPath);
+  await approvals2.decide("write_file", { path: "out.txt", content: "*" }, "medium", ws);
+  expect(askCalls).toBe(1);
+});
+
+test("(I3) /approve listing sanitizes hostile bytes in a stored rule pattern", () => {
+  const rulesPath = join(razielHome(), "rules.json");
+  const rules = Rules.load(rulesPath);
+  rules.add({ tool: "read_file", pattern: "\x1b]0;PWNED\x07*evil*" });
+  rules.save(rulesPath);
+  let out = "";
+  const cmd = createApproveCommand({ rules, rulesPath, write: (s) => { out += s; } });
+
+  const result = cmd("/approve");
+
+  expect(result).toBe("handled");
+  expect(out).not.toContain("\x1b");
+});
+
+test("(I4) a line arriving after a deny-timeout expires is not executed and is flagged, not silently dropped", async () => {
+  const ws = mkWorkspaceWithFile("dummy.txt", "x");
+  const registry = builtinTools();
+  const rulesPath = join(razielHome(), "rules.json");
+  const rules = Rules.load(rulesPath);
+  let out = "";
+  const write = (s: string) => { out += s; };
+  const input = delayed(50, "some-late-line"); // arrives well after the 10ms timeout
+  const ask = createAsk({
+    write,
+    readLine: async () => { const r = await input.next(); return r.done ? undefined : r.value; },
+    timeoutMs: 10,
+  });
+  const approvals = new ApprovalManager(rules, { ask, write }, rulesPath);
+  const store = new SessionStore("cli-timeout-late-line");
+  const provider = new ScriptedToolProvider([
+    { toolCalls: [{ name: "run_command", args: { argv: ["echo", "hi"] } }] },
+    { delta: ["done"] },
+  ]);
+  const engine = new Engine({ provider, store, model: "m", tools: { registry, ws, approvals } });
+
+  for await (const _e of engine.send("run something")) { /* drain */ }
+  const tr = store.replay().find((e) => e.type === "tool_result") as any;
+  expect(tr.ok).toBe(false); // denied by the timeout, not by the late line
+
+  await new Promise((r) => setTimeout(r, 80)); // let the late line actually arrive
+  expect(out).toContain("input ignored");
 });

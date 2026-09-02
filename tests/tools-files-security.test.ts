@@ -1,5 +1,5 @@
 import { describe, test, expect } from "bun:test";
-import { mkdtempSync, writeFileSync, symlinkSync } from "node:fs";
+import { existsSync, mkdtempSync, writeFileSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Workspace } from "../src/tools/workspace";
@@ -79,5 +79,42 @@ describe("fix round: symlink escape (security ruling)", () => {
     // on macOS). The constructor must realpath root so ordinary contains still pass.
     expect(ws.contain("plain.txt")).toBe(join(ws.root, "plain.txt"));
     expect(ws.contain(".")).toBe(ws.root);
+  });
+});
+
+describe("fix round (Critical, C1): dangling-symlink write escape", () => {
+  test("contain() throws on a dangling symlink (target doesn't exist, outside root)", () => {
+    const outsideDir = mkdtempSync(join(tmpdir(), "raziel-outside-"));
+    const ws = mkws();
+    symlinkSync(join(outsideDir, "created.txt"), join(ws.root, "link"));
+
+    expect(() => ws.contain("link")).toThrow(/path escapes workspace/);
+  });
+
+  test("writeFileTool via a dangling symlink returns ok:false and creates NO file outside", async () => {
+    const outsideDir = mkdtempSync(join(tmpdir(), "raziel-outside-"));
+    const target = join(outsideDir, "created.txt");
+    const ws = mkws();
+    symlinkSync(target, join(ws.root, "link"));
+
+    const w = await writeFileTool.run({ path: "link", content: "pwned" }, ws);
+
+    expect(w.ok).toBe(false);
+    expect(existsSync(target)).toBe(false);
+  });
+
+  test("a dangling symlink CHAIN (link -> link2 -> outside, target missing) is also refused", () => {
+    const outsideDir = mkdtempSync(join(tmpdir(), "raziel-outside-"));
+    const ws = mkws();
+    const link2 = join(ws.root, "link2");
+    symlinkSync(join(outsideDir, "nope.txt"), link2);
+    symlinkSync(link2, join(ws.root, "link"));
+
+    expect(() => ws.contain("link")).toThrow(/path escapes workspace/);
+  });
+
+  test("a plain non-existent path (no symlink anywhere in it) still contains fine", () => {
+    const ws = mkws();
+    expect(ws.contain("newdir/f.txt")).toBe(join(ws.root, "newdir", "f.txt"));
   });
 });

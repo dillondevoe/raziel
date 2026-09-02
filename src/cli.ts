@@ -8,7 +8,7 @@ import { defaultProfileId, getProfile } from "./profiles";
 import { sanitizeForTerminal } from "./term";
 import { providerForOrExit, createModelCommand, createApproveCommand, createAsk, statusLine } from "./commands";
 import { Workspace } from "./tools/workspace";
-import { builtinTools } from "./tools/registry";
+import { builtinTools, sliceTools } from "./tools/registry";
 import { Rules } from "./rules";
 import { ApprovalManager } from "./approvals";
 
@@ -93,7 +93,7 @@ async function main(): Promise<void> {
   const ws = new Workspace(process.cwd());
   const rulesPath = join(razielHome(), "rules.json");
   const rules = Rules.load(rulesPath);
-  if (rules.loadWarning) write(`raziel: ${rules.loadWarning}\n`);
+  if (rules.loadWarning) write(sanitizeForTerminal(`raziel: ${rules.loadWarning}`) + "\n");
 
   // `inputIter` is assigned below once readline is wired up; createAsk's
   // readLine closure only runs once the REPL is actually running, by which
@@ -108,14 +108,19 @@ async function main(): Promise<void> {
       return r.done ? undefined : r.value;
     },
   });
-  const approvals = new ApprovalManager(rules, { ask }, rulesPath);
-  const registry = builtinTools();
-  const tools = { registry, ws, approvals };
+  const approvals = new ApprovalManager(rules, { ask, write }, rulesPath);
+  // `toolsFull` carries the UNSLICED registry — createModelCommand re-slices
+  // it to each newly-selected profile's maxToolSurface on every /model swap
+  // (I1, fix round). `toolsInitial` is the slice for the profile main()
+  // starts on, so the very first Engine already respects it too.
+  const registryFull = builtinTools();
+  const toolsFull = { registry: registryFull, ws, approvals };
+  const toolsInitial = { registry: sliceTools(registryFull, profile.maxToolSurface), ws, approvals };
 
   const provider = process.env.RAZIEL_FAKE === "1" ? new FakeProvider([["(fake reply)"]]) : providerForOrExit(profile);
   const engine = modelIsOverridden
-    ? new Engine({ provider, store, model, tools })
-    : new Engine({ provider, store, profile, tools });
+    ? new Engine({ provider, store, model, tools: toolsInitial })
+    : new Engine({ provider, store, profile, tools: toolsInitial });
   const engineBox: { current: Engine } = { current: engine };
 
   const signalRef: { current: AbortController | null } = { current: null };
@@ -131,7 +136,7 @@ async function main(): Promise<void> {
 
   if (process.stdout.isTTY) write(SIGIL);
   write(statusLine(store, model, provider.name));
-  const modelCmd = createModelCommand({ engineBox, store, initialProfile: profile, write, tools });
+  const modelCmd = createModelCommand({ engineBox, store, initialProfile: profile, write, tools: toolsFull });
   const approveCmd = createApproveCommand({ rules, rulesPath, write });
   const onCommand = (line: string): "handled" | "not-command" =>
     modelCmd(line) === "handled" ? "handled" : approveCmd(line);

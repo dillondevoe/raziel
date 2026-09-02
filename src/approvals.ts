@@ -28,6 +28,10 @@ function escapeForCard(s: string): string {
 
 export type ApprovalDeps = {
   ask(card: string, risk: RiskClass): Promise<"allow" | "deny" | "always">;
+  // Optional side-channel for a decision-time notice unrelated to the ask
+  // prompt itself (fix round, I2) — e.g. refusing to persist an
+  // over-broad "always" rule. Sanitized by the caller before writing.
+  write?: (s: string) => void;
 };
 
 /** Renders the human-facing approval card for one tool call. The whole card
@@ -95,8 +99,23 @@ export class ApprovalManager {
     const answer = await this.deps.ask(card, risk);
 
     if (answer === "always") {
-      this.rules.add({ tool, pattern: canonicalJson(args) });
-      this.rules.save(this.rulesPath);
+      const pattern = canonicalJson(args);
+      // I2 (fix round): a literal "*" anywhere in the args — not just a
+      // wholly-wildcard pattern (R12, already refused by rules.add) —
+      // compiles to a wildcard segment in globToRegExp and silently
+      // widens the rule to match different future args than the one just
+      // approved (live-confirmed: content:"*" auto-allowed ANY content).
+      // Still allow this one call, but never persist that rule.
+      if (pattern.includes("*")) {
+        this.deps.write?.(
+          sanitizeForTerminal(
+            "always-rule not saved: args contain '*' (would over-match); add a rule manually with /approve",
+          ) + "\n",
+        );
+      } else {
+        this.rules.add({ tool, pattern });
+        this.rules.save(this.rulesPath);
+      }
       return { decision: "allow", argsHash: hash };
     }
 

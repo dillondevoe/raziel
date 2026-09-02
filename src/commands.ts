@@ -7,8 +7,9 @@ import type { Provider } from "./provider";
 import { getProfile, listProfiles, type ModelProfile } from "./profiles";
 import { sanitizeForTerminal } from "./term";
 import type { ToolDeps } from "./engine_tool_call";
-import type { RiskClass } from "./tools/types";
+import { sliceTools } from "./tools/registry";
 import type { Rules } from "./rules";
+export { createAsk, type AskDeps } from "./ask";
 
 const MISSING_ANTHROPIC_KEY_MESSAGE = "ANTHROPIC_API_KEY not set (or use RAZIEL_FAKE=1)";
 
@@ -47,7 +48,13 @@ export function statusLine(store: SessionStore, model: string, providerName: str
 
 /** The real /model REPL command. Bare `/model` lists the registry (marking
  * the current profile); `/model <id>` rebuilds the Engine over the SAME
- * SessionStore. Unknown id or provider error -> one-line error, no swap. */
+ * SessionStore. Unknown id or provider error -> one-line error, no swap.
+ *
+ * `deps.tools`, when given, carries the FULL (unsliced) builtin registry —
+ * every swap re-slices it to the NEW profile's maxToolSurface (I1, fix
+ * round) rather than reusing whatever slice the previous profile had, so a
+ * swap from a narrow-surface profile to a wider one regains the tools the
+ * narrower profile didn't get, and vice versa. */
 export function createModelCommand(deps: {
   engineBox: { current: Engine };
   store: SessionStore;
@@ -84,56 +91,22 @@ export function createModelCommand(deps: {
       deps.write(sanitizeForTerminal(`raziel: ${err instanceof Error ? err.message : String(err)}\n`));
       return "handled";
     }
-    deps.engineBox.current = new Engine({ provider, store: deps.store, profile: next, tools: deps.tools });
+    const tools: ToolDeps | undefined = deps.tools
+      ? { registry: sliceTools(deps.tools.registry, next.maxToolSurface), ws: deps.tools.ws, approvals: deps.tools.approvals }
+      : undefined;
+    deps.engineBox.current = new Engine({ provider, store: deps.store, profile: next, tools });
     current = next;
     deps.write(statusLine(deps.store, next.model, provider.name));
     return "handled";
   };
 }
 
-const DEFAULT_DENY_TIMEOUT_MS = 30_000;
-
-export type AskDeps = {
-  write: (s: string) => void;
-  readLine: () => Promise<string | undefined>;
-  timeoutMs?: number;
-};
-
-/** Builds the REPL-facing ApprovalDeps.ask: writes the card, reads one line
- * ("y"=allow, "a"=always, anything else=deny). HIGH-or-critical-risk asks
- * additionally race a deny-default timer (R14) — if no answer arrives
- * before it fires, the call denies rather than blocking forever. The timer
- * is unref'd so a pending high-risk prompt never keeps the process alive. */
-export function createAsk(deps: AskDeps): (card: string, risk: RiskClass) => Promise<"allow" | "deny" | "always"> {
-  const timeoutMs = deps.timeoutMs ?? DEFAULT_DENY_TIMEOUT_MS;
-
-  return async (card, risk) => {
-    deps.write(`${card}\n`);
-    const linePromise = deps.readLine();
-
-    let line: string | undefined;
-    if (risk === "high" || risk === "critical") {
-      line = await new Promise<string | undefined>((resolve) => {
-        const timer = setTimeout(() => resolve(undefined), timeoutMs);
-        timer.unref?.();
-        linePromise.then((v) => {
-          clearTimeout(timer);
-          resolve(v);
-        });
-      });
-    } else {
-      line = await linePromise;
-    }
-
-    if (line === "y") return "allow";
-    if (line === "a") return "always";
-    return "deny";
-  };
-}
-
 /** The `/approve` REPL command: bare lists standing rules (numbered, with a
  * count — the session-visible counter R14 calls for); `/approve rm <n>`
- * removes the rule at that 1-indexed position and persists the change. */
+ * removes the rule at that 1-indexed position and persists the change.
+ * Listed rule text comes from disk (rules.json) and is sanitized before
+ * hitting the terminal (I3, fix round) — a stored pattern is exactly as
+ * untrusted as any other tool-adjacent text. */
 export function createApproveCommand(deps: {
   rules: Rules;
   rulesPath: string;
@@ -144,7 +117,9 @@ export function createApproveCommand(deps: {
     const arg = line.slice("/approve".length).trim();
 
     if (arg === "") {
-      deps.rules.list().forEach((r, i) => deps.write(`${i + 1}. ${r.tool}  ${r.pattern}\n`));
+      deps.rules.list().forEach((r, i) => {
+        deps.write(sanitizeForTerminal(`${i + 1}. ${r.tool}  ${r.pattern}`) + "\n");
+      });
       deps.write(`${deps.rules.count()} standing rule(s)\n`);
       return "handled";
     }
