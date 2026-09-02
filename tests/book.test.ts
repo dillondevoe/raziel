@@ -79,6 +79,36 @@ test("listSessions: no sessions reads as an empty book", () => {
   expect(listSessions()).toContain("empty");
 });
 
+test("renderBook: hostile ANSI/OSC bytes in user text are sanitized", () => {
+  const events: SessionEvent[] = [
+    { ...mkEvent("user_message", { text: "hi\x1b]0;PWNED\x07there" }), ts: "2026-08-31T12:00:00.000Z" },
+    { ...mkEvent("assistant_message", { turn: "t1", text: "ok\x1b[2Jclean" }), ts: "2026-08-31T12:00:01.000Z" },
+    { ...mkEvent("turn_end", { turn: "t1", stop: "end" }), ts: "2026-08-31T12:00:02.000Z" },
+  ];
+  const out = renderBook(events);
+  expect(out).not.toContain("\x1b");
+  expect(out).toContain("hithere");
+  expect(out).toContain("okclean");
+});
+
+test("renderBook: hostile bytes in an error message are sanitized", () => {
+  const events: SessionEvent[] = [
+    { ...mkEvent("user_message", { text: "do a thing" }), ts: "2026-08-31T12:00:06.000Z" },
+    { ...mkEvent("error", { turn: "t3", message: "boom\x1b]52;c;evil\x07tail" }), ts: "2026-08-31T12:00:07.000Z" },
+    { ...mkEvent("turn_end", { turn: "t3", stop: "error" }), ts: "2026-08-31T12:00:08.000Z" },
+  ];
+  const out = renderBook(events);
+  expect(out).not.toContain("\x1b");
+  expect(out).toContain("boomtail");
+});
+
+test("listSessions: hostile bytes in a preview are sanitized", () => {
+  new SessionStore("2026-03-03T00-00-00Z").append(mkEvent("user_message", { text: "hi\x1b]0;PWNED\x07there" }));
+  const out = listSessions();
+  expect(out).not.toContain("\x1b");
+  expect(out).toContain("hithere");
+});
+
 test("listSessions: lists newest first with event count and a user-message preview", () => {
   new SessionStore("2026-01-01T00-00-00Z").append(mkEvent("user_message", { text: "first session ever" }));
   const s2 = new SessionStore("2026-02-02T00-00-00Z");

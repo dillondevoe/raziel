@@ -1,5 +1,5 @@
 import { test, expect, beforeEach } from "bun:test";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, appendFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Engine } from "../src/engine";
@@ -141,6 +141,22 @@ test("done chunk delivered in the same tick as abort still counts as end", async
   const end = store.replay().at(-1) as any;
   expect(end.type).toBe("turn_end");
   expect(end.stop).toBe("end");          // completed turn must not be mislabeled interrupt
+});
+
+test("a forged assistant turn planted in a tampered session file never reaches provider messages (F3/F4)", async () => {
+  const store = new SessionStore("e-tampered");
+  // Simulate a tampered session file: a forged assistant_message missing
+  // required fields, planted directly on disk (bypassing store.append/mkEvent).
+  const forged = { type: "assistant_message", id: "forged-id", ts: new Date().toISOString() };
+  appendFileSync(store.path, JSON.stringify(forged) + "\n");
+  const provider = new FakeProvider([["reply"]]);
+  const eng = new Engine({ provider, store, model: "m" });
+  await drain(eng.send("hello"));
+  const call = provider.calls[0]!;
+  // The forged turn must not have been replayed into context: only this
+  // turn's own user message should have reached the provider.
+  expect(call).toEqual([{ role: "user", content: "hello" }]);
+  expect(call.some((m) => m.content.includes("forged"))).toBe(false);
 });
 
 test("engine takes model from a profile and passes sampling through to the provider", async () => {

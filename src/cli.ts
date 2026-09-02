@@ -5,6 +5,7 @@ import { AnthropicProvider } from "./providers/anthropic";
 import { FakeProvider } from "./providers/fake";
 import { renderBook, listSessions } from "./book";
 import { defaultProfileId, getProfile } from "./profiles";
+import { sanitizeForTerminal } from "./term";
 
 const SIGIL = "   ╭───╮\n   │ ✧ │\n   ╰───╯\nraziel — keeper of the Book of Secrets\n";
 
@@ -33,9 +34,9 @@ export async function runRepl(opts: {
     const ctl = new AbortController();
     if (opts.signalRef) opts.signalRef.current = ctl;
     for await (const e of opts.engine.send(text, { signal: ctl.signal })) {
-      if (e.type === "assistant_delta") opts.write(e.text);
+      if (e.type === "assistant_delta") opts.write(sanitizeForTerminal(e.text));
       else if (e.type === "turn_end") opts.write("\n");
-      else if (e.type === "error") opts.write(`\n[error] ${e.message}\n`);
+      else if (e.type === "error") opts.write(`\n[error] ${sanitizeForTerminal(e.message)}\n`);
     }
     if (opts.signalRef) opts.signalRef.current = null;
   }
@@ -46,14 +47,25 @@ function arg(name: string): string | undefined {
   return i >= 0 ? process.argv[i + 1] : undefined;
 }
 
+/** Constructs a SessionStore, converting an invalid-id throw into a clean
+ * one-line stderr message + process exit (no stack trace shown to the user). */
+function openSessionOrExit(sessionId?: string): SessionStore {
+  try {
+    return new SessionStore(sessionId);
+  } catch (err) {
+    process.stderr.write(`raziel: ${err instanceof Error ? err.message : String(err)}\n`);
+    process.exit(1);
+  }
+}
+
 async function main(): Promise<void> {
   if (process.argv[2] === "book") {
     const sessionId = process.argv[3];
-    process.stdout.write(sessionId ? renderBook(new SessionStore(sessionId).replay()) : listSessions());
+    process.stdout.write(sessionId ? renderBook(openSessionOrExit(sessionId).replay()) : listSessions());
     return;
   }
 
-  const store = new SessionStore(arg("--session"));
+  const store = openSessionOrExit(arg("--session"));
   // Full --profile / /model hot-swap wiring lands in a later M1a task; for now
   // the CLI's default model is resolved from the registry rather than duplicated here.
   const model = arg("--model") ?? getProfile(defaultProfileId())!.model;

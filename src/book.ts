@@ -1,5 +1,6 @@
 import { SessionStore } from "./session";
 import type { SessionEvent } from "./events";
+import { sanitizeForTerminal } from "./term";
 
 const RESET = "\x1b[0m";
 const DIM = "\x1b[2m";
@@ -68,14 +69,15 @@ export function renderBook(events: SessionEvent[]): string {
 
   const lines: string[] = [];
   for (const t of turns) {
-    lines.push(`  ${paint(CYAN, "›")} ${t.user}`);
+    lines.push(`  ${paint(CYAN, "›")} ${sanitizeForTerminal(t.user)}`);
     if (t.body?.kind === "text") {
-      lines.push(`  ${t.body.text}`);
+      lines.push(`  ${sanitizeForTerminal(t.body.text)}`);
     } else if (t.body?.kind === "interrupted") {
       const marker = paint(YELLOW, "⊘ interrupted");
-      lines.push(t.body.text ? `  ${marker} — ${t.body.text}` : `  ${marker}`);
+      const text = sanitizeForTerminal(t.body.text);
+      lines.push(text ? `  ${marker} — ${text}` : `  ${marker}`);
     } else if (t.body?.kind === "error") {
-      lines.push(`  ${paint(RED, `✗ error: ${t.body.message}`)}`);
+      lines.push(`  ${paint(RED, `✗ error: ${sanitizeForTerminal(t.body.message)}`)}`);
     }
     lines.push(`  ${paint(DIM, `· ${t.stop} ${hms(t.ts)}`)}`);
     lines.push("");
@@ -90,8 +92,8 @@ export function listSessions(): string {
   const rows = ids.map((id) => {
     const events = new SessionStore(id).replay();
     const first = events.find((e) => e.type === "user_message");
-    const preview = first ? truncate(first.text, 60) : paint(DIM, "(no messages)");
-    return `  ${id}  ${paint(DIM, `${events.length} events`)}  ${preview}`;
+    const preview = first ? truncate(sanitizeForTerminal(first.text), 60) : paint(DIM, "(no messages)");
+    return `  ${sanitizeForTerminal(id)}  ${paint(DIM, `${events.length} events`)}  ${preview}`;
   });
   return rows.join("\n") + "\n";
 }
