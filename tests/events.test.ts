@@ -8,6 +8,14 @@ test("canonicalJson is key-order stable and argsHash matches recomputation", () 
   expect(argsHash("t", { a: 1 })).not.toBe(argsHash("u", { a: 1 }));
 });
 
+test("canonicalJson drops undefined object properties; arrays convert undefined to null", () => {
+  expect(canonicalJson({ a: undefined, b: 1 })).toBe('{"b":1}');
+  expect(canonicalJson([1, undefined, 2])).toBe('[1,null,2]');
+  expect(argsHash("t", { a: undefined, b: 1 })).toBe(argsHash("t", { b: 1 }));
+  expect(JSON.parse(canonicalJson({ a: undefined, b: 1 }))).toEqual({ b: 1 });
+  expect(JSON.parse(canonicalJson([1, undefined, 2]))).toEqual([1, null, 2]);
+});
+
 test("v2 tool events validate; forged/missing fields rejected", () => {
   const ok = mkEvent("tool_request", { turn: "t", tool: "read_file", args: { p: 1 }, requestId: "r1", provenance: "provider_structured", argsHash: "ab".repeat(32) });
   expect(isValidEvent(JSON.parse(JSON.stringify(ok)))).toBe(true);

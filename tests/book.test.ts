@@ -107,6 +107,18 @@ test("renderBook: OSC/control chars in tool output are sanitized", () => {
   expect(out).toContain("filecontents");
 });
 
+test("renderBook: OSC/control chars in tool name are sanitized", () => {
+  const events: SessionEvent[] = [
+    { ...mkEvent("user_message", { text: "run a tool" }), ts: "2026-08-31T12:00:11.000Z" },
+    { ...mkEvent("tool_request", { turn: "t5", tool: "read\x1b]52;c;evil\x07file", args: {}, requestId: "r1", provenance: "provider_structured", argsHash: "ab".repeat(32) }), ts: "2026-08-31T12:00:12.000Z" },
+    { ...mkEvent("assistant_message", { turn: "t5", text: "done" }), ts: "2026-08-31T12:00:13.000Z" },
+    { ...mkEvent("turn_end", { turn: "t5", stop: "end" }), ts: "2026-08-31T12:00:14.000Z" },
+  ];
+  const out = renderBook(events);
+  expect(out).not.toContain("\x1b");
+  expect(out).toContain("readfile");
+});
+
 test("renderBook: unknown/torn event types are skipped gracefully", () => {
   const events: SessionEvent[] = [
     { ...mkEvent("user_message", { text: "run a tool" }), ts: "2026-08-31T12:00:11.000Z" },

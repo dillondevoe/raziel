@@ -5,9 +5,9 @@ export type Provenance = "provider_structured";
 
 export function canonicalJson(v: unknown): string {
   if (v === null || typeof v !== "object") return JSON.stringify(v);
-  if (Array.isArray(v)) return `[${v.map(canonicalJson).join(",")}]`;
+  if (Array.isArray(v)) return `[${v.map((el) => (el === undefined ? "null" : canonicalJson(el))).join(",")}]`;
   const rec = v as Record<string, unknown>;
-  const keys = Object.keys(rec).sort();
+  const keys = Object.keys(rec).filter((k) => rec[k] !== undefined).sort();
   return `{${keys.map((k) => `${JSON.stringify(k)}:${canonicalJson(rec[k])}`).join(",")}}`;
 }
 

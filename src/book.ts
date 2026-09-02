@@ -32,36 +32,6 @@ type TurnBody =
   | { kind: "error"; message: string }
   | null;
 
-type Turn = { user: string; body: TurnBody; stop: "end" | "interrupt" | "error"; ts: string };
-
-/** Groups a flat event log into turns: (user line, response body, turn-end). */
-function collectTurns(events: SessionEvent[]): Turn[] {
-  const turns: Turn[] = [];
-  let userText: string | null = null;
-  let body: TurnBody = null;
-
-  for (const e of events) {
-    if (e.type === "user_message") {
-      userText = e.text;
-      body = null;
-    } else if (e.type === "assistant_message") {
-      body = { kind: "text", text: e.text };
-    } else if (e.type === "error") {
-      body = { kind: "error", message: e.message };
-    } else if (e.type === "turn_end") {
-      if (userText === null) continue;
-      const partial = body !== null && body.kind === "text" ? body.text : "";
-      const finalBody: TurnBody = e.stop === "interrupt" ? { kind: "interrupted", text: partial } : body;
-      turns.push({ user: userText, body: finalBody, stop: e.stop, ts: e.ts });
-      userText = null;
-      body = null;
-    }
-    // tool_request / approval_request / approval_decision / tool_result /
-    // any future or torn event type: not yet rendered — skipped gracefully.
-  }
-  return turns;
-}
-
 /** Pretty-prints a session's event log as a transcript. Pure: no I/O. */
 export function renderBook(events: SessionEvent[]): string {
   if (events.length === 0) return `${paint(DIM, "(the book is empty)")}\n`;
@@ -69,8 +39,6 @@ export function renderBook(events: SessionEvent[]): string {
   const lines: string[] = [];
   let userText: string | null = null;
   let turnBody: TurnBody = null;
-  let turnStop = "end";
-  let turnTs = "";
 
   for (const e of events) {
     if (e.type === "user_message") {
@@ -101,11 +69,11 @@ export function renderBook(events: SessionEvent[]): string {
       userText = null;
       turnBody = null;
     } else if (e.type === "tool_request") {
-      const hash = sanitizeForTerminal((e.argsHash as string).slice(0, 8));
+      const hash = sanitizeForTerminal(e.argsHash.slice(0, 8));
       const tool = sanitizeForTerminal(e.tool);
       lines.push(`  ${paint(CYAN, "⚙")} tool_request ${tool} ${hash}`);
     } else if (e.type === "approval_request") {
-      const risk = sanitizeForTerminal((e as any).risk as string);
+      const risk = sanitizeForTerminal(e.risk);
       const tool = sanitizeForTerminal(e.tool);
       lines.push(`  ${paint(YELLOW, "?")} approval_request ${tool} ${paint(YELLOW, `[${risk}]`)}`);
     } else if (e.type === "approval_decision") {
@@ -113,8 +81,7 @@ export function renderBook(events: SessionEvent[]): string {
       lines.push(`  ${paint(CYAN, "→")} approval_decision ${decision}`);
     } else if (e.type === "tool_result") {
       const tool = sanitizeForTerminal(e.tool);
-      const ok = (e as any).ok as boolean;
-      const statusMarker = ok ? paint(CYAN, "✓") : paint(RED, "✗");
+      const statusMarker = e.ok ? paint(CYAN, "✓") : paint(RED, "✗");
       lines.push(`  ${statusMarker} tool_result ${tool}`);
       const output = sanitizeForTerminal(e.output);
       if (output) {
