@@ -85,15 +85,26 @@ export function renderBook(events: SessionEvent[]): string {
   return lines.join("\n") + "\n";
 }
 
-/** Lists known sessions, newest first, with event count + a first-message preview. */
+/** Lists known sessions, newest first, with event count + a first-message preview.
+ * A filename that fails session-id validation (planted by a non-raziel
+ * writer — SyncThing sync, backup restore: F1's own threat model) is
+ * skipped rather than crashing the whole listing; the count of skipped
+ * files is summarized in one final line, no raw ids echoed. */
 export function listSessions(): string {
   const ids = SessionStore.list();
   if (ids.length === 0) return `${paint(DIM, "(the book is empty)")}\n`;
-  const rows = ids.map((id) => {
-    const events = new SessionStore(id).replay();
-    const first = events.find((e) => e.type === "user_message");
-    const preview = first ? truncate(sanitizeForTerminal(first.text), 60) : paint(DIM, "(no messages)");
-    return `  ${sanitizeForTerminal(id)}  ${paint(DIM, `${events.length} events`)}  ${preview}`;
-  });
+  const rows: string[] = [];
+  let unlistable = 0;
+  for (const id of ids) {
+    try {
+      const events = new SessionStore(id).replay();
+      const first = events.find((e) => e.type === "user_message");
+      const preview = first ? truncate(sanitizeForTerminal(first.text), 60) : paint(DIM, "(no messages)");
+      rows.push(`  ${sanitizeForTerminal(id)}  ${paint(DIM, `${events.length} events`)}  ${preview}`);
+    } catch {
+      unlistable++;
+    }
+  }
+  if (unlistable > 0) rows.push(`  ${paint(DIM, `(+${unlistable} unlistable session files ignored)`)}`);
   return rows.join("\n") + "\n";
 }

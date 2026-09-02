@@ -1,9 +1,9 @@
 import { test, expect, beforeEach } from "bun:test";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { renderBook, listSessions } from "../src/book";
-import { SessionStore } from "../src/session";
+import { SessionStore, razielHome } from "../src/session";
 import { mkEvent, type SessionEvent } from "../src/events";
 
 beforeEach(() => { process.env.RAZIEL_HOME = mkdtempSync(join(tmpdir(), "raziel-book-test-")); });
@@ -107,6 +107,22 @@ test("listSessions: hostile bytes in a preview are sanitized", () => {
   const out = listSessions();
   expect(out).not.toContain("\x1b");
   expect(out).toContain("hithere");
+});
+
+test("listSessions: a foreign/malformed session filename is skipped, not crashed on (F1 regression)", () => {
+  new SessionStore("2026-01-01T00-00-00Z").append(mkEvent("user_message", { text: "first session ever" }));
+  new SessionStore("2026-02-02T00-00-00Z").append(mkEvent("user_message", { text: "second session" }));
+  // Planted directly on disk, bypassing SessionStore's validated constructor —
+  // simulates a non-raziel writer (SyncThing sync, backup restore): F1's own
+  // threat model, now landing a filename that fails id validation.
+  writeFileSync(join(razielHome(), "sessions", "weird name; rm -rf.jsonl"), "");
+  expect(() => listSessions()).not.toThrow();
+  const out = listSessions();
+  expect(out).toContain("2026-01-01T00-00-00Z");
+  expect(out).toContain("2026-02-02T00-00-00Z");
+  expect(out).toContain("(+1 unlistable session files ignored)");
+  expect(out).not.toContain("weird name");
+  expect(out).not.toContain("rm -rf");
 });
 
 test("listSessions: lists newest first with event count and a user-message preview", () => {
