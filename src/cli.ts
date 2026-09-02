@@ -3,6 +3,9 @@ import { Engine } from "./engine";
 import { SessionStore } from "./session";
 import { AnthropicProvider } from "./providers/anthropic";
 import { FakeProvider } from "./providers/fake";
+import { renderBook, listSessions } from "./book";
+
+const SIGIL = "   ╭───╮\n   │ ✧ │\n   ╰───╯\nraziel — keeper of the Book of Secrets\n";
 
 export async function runRepl(opts: {
   engine: Engine;
@@ -31,6 +34,12 @@ function arg(name: string): string | undefined {
 }
 
 async function main(): Promise<void> {
+  if (process.argv[2] === "book") {
+    const sessionId = process.argv[3];
+    process.stdout.write(sessionId ? renderBook(new SessionStore(sessionId).replay()) : listSessions());
+    return;
+  }
+
   const store = new SessionStore(arg("--session"));
   const model = arg("--model") ?? "claude-sonnet-5";
   const provider = process.env.RAZIEL_FAKE === "1"
@@ -52,6 +61,7 @@ async function main(): Promise<void> {
   // Piped/non-TTY stdin never fires readline's "SIGINT" event, so this stays registered.
   process.on("SIGINT", onSigint);
 
+  if (process.stdout.isTTY) process.stdout.write(SIGIL);
   process.stdout.write(`raziel ▷ session ${store.id} · model ${model} · ${provider.name}\n`);
   const rl = createInterface({ input: process.stdin, output: process.stdout, prompt: "raziel> " });
   let rlClosed = false;

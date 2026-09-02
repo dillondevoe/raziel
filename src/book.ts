@@ -1,0 +1,97 @@
+import { SessionStore } from "./session";
+import type { SessionEvent } from "./events";
+
+const RESET = "\x1b[0m";
+const DIM = "\x1b[2m";
+const RED = "\x1b[31m";
+const YELLOW = "\x1b[33m";
+const CYAN = "\x1b[36m";
+
+function colorOn(): boolean {
+  return Boolean(process.stdout.isTTY) && !process.env.NO_COLOR;
+}
+
+function paint(code: string, s: string): string {
+  return colorOn() ? `${code}${s}${RESET}` : s;
+}
+
+function hms(ts: string): string {
+  const d = new Date(ts);
+  return Number.isNaN(d.getTime()) ? "??:??:??" : d.toISOString().slice(11, 19);
+}
+
+function truncate(s: string, n: number): string {
+  const flat = s.replace(/\s+/g, " ").trim();
+  return flat.length > n ? `${flat.slice(0, n - 1)}…` : flat;
+}
+
+type TurnBody =
+  | { kind: "text"; text: string }
+  | { kind: "interrupted"; text: string }
+  | { kind: "error"; message: string }
+  | null;
+
+type Turn = { user: string; body: TurnBody; stop: "end" | "interrupt" | "error"; ts: string };
+
+/** Groups a flat event log into turns: (user line, response body, turn-end). */
+function collectTurns(events: SessionEvent[]): Turn[] {
+  const turns: Turn[] = [];
+  let userText: string | null = null;
+  let body: TurnBody = null;
+
+  for (const e of events) {
+    if (e.type === "user_message") {
+      userText = e.text;
+      body = null;
+    } else if (e.type === "assistant_message") {
+      body = { kind: "text", text: e.text };
+    } else if (e.type === "error") {
+      body = { kind: "error", message: e.message };
+    } else if (e.type === "turn_end") {
+      if (userText === null) continue;
+      const partial = body !== null && body.kind === "text" ? body.text : "";
+      const finalBody: TurnBody = e.stop === "interrupt" ? { kind: "interrupted", text: partial } : body;
+      turns.push({ user: userText, body: finalBody, stop: e.stop, ts: e.ts });
+      userText = null;
+      body = null;
+    }
+    // tool_request / approval_request / approval_decision / tool_result /
+    // any future or torn event type: not yet rendered — skipped gracefully.
+  }
+  return turns;
+}
+
+/** Pretty-prints a session's event log as a transcript. Pure: no I/O. */
+export function renderBook(events: SessionEvent[]): string {
+  const turns = collectTurns(events);
+  if (turns.length === 0) return `${paint(DIM, "(the book is empty)")}\n`;
+
+  const lines: string[] = [];
+  for (const t of turns) {
+    lines.push(`  ${paint(CYAN, "›")} ${t.user}`);
+    if (t.body?.kind === "text") {
+      lines.push(`  ${t.body.text}`);
+    } else if (t.body?.kind === "interrupted") {
+      const marker = paint(YELLOW, "⊘ interrupted");
+      lines.push(t.body.text ? `  ${marker} — ${t.body.text}` : `  ${marker}`);
+    } else if (t.body?.kind === "error") {
+      lines.push(`  ${paint(RED, `✗ error: ${t.body.message}`)}`);
+    }
+    lines.push(`  ${paint(DIM, `· ${t.stop} ${hms(t.ts)}`)}`);
+    lines.push("");
+  }
+  return lines.join("\n") + "\n";
+}
+
+/** Lists known sessions, newest first, with event count + a first-message preview. */
+export function listSessions(): string {
+  const ids = SessionStore.list();
+  if (ids.length === 0) return `${paint(DIM, "(the book is empty)")}\n`;
+  const rows = ids.map((id) => {
+    const events = new SessionStore(id).replay();
+    const first = events.find((e) => e.type === "user_message");
+    const preview = first ? truncate(first.text, 60) : paint(DIM, "(no messages)");
+    return `  ${id}  ${paint(DIM, `${events.length} events`)}  ${preview}`;
+  });
+  return rows.join("\n") + "\n";
+}
