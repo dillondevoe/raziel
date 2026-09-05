@@ -191,8 +191,12 @@ test("comment forbids estimated numbers (M1d deferral)", () => {
   // This test verifies that the source code contains a comment forbidding
   // estimated numbers like token counts or tok/s. The comment should be
   // visible in the source code.
+  // Resolved relative to THIS file, never an absolute machine path: the first version
+  // hardcoded /Users/dtd/raziel/... and was red on every CI runner from 2d11f67 onward
+  // (a target you have not inspected is a guess with a path in it).
   const fs = require("fs");
-  const code = fs.readFileSync("/Users/dtd/raziel/src/tui/status.ts", "utf-8");
+  const path = require("path");
+  const code = fs.readFileSync(path.join(import.meta.dir, "..", "src", "tui", "status.ts"), "utf-8");
   expect(code).toContain("M1d");
   expect(code).toContain("estimated");
   expect(code).toContain("forbid");
