@@ -5,6 +5,7 @@ import { SessionStore, razielHome } from "./session";
 import { FakeProvider } from "./providers/fake";
 import { renderBook, listSessions } from "./book";
 import { defaultProfileId, getProfile, type ModelProfile } from "./profiles";
+import { loadSystemPrompt } from "./system_prompt";
 import { sanitizeForTerminal } from "./term";
 import { providerForOrExit, createModelCommand, createApproveCommand, createAsk, statusLine } from "./commands";
 import { Workspace } from "./tools/workspace";
@@ -150,8 +151,11 @@ async function main(): Promise<void> {
   const toolsInitial = { registry: sliceTools(registryFull, profile.maxToolSurface), ws, approvals };
 
   const engine = modelIsOverridden
-    ? new Engine({ provider, store, model, tools: toolsInitial })
-    : new Engine({ provider, store, profile, tools: toolsInitial });
+    // `system` sits outside the model/profile union: a --model override
+    // changes which model string goes out, not which profile the user
+    // selected, so the selected profile's persona applies to both paths.
+    ? new Engine({ provider, store, model, system: loadSystemPrompt(profile), tools: toolsInitial })
+    : new Engine({ provider, store, profile, system: loadSystemPrompt(profile), tools: toolsInitial });
   const engineBox: { current: Engine } = { current: engine };
 
   if (process.stdout.isTTY) write(SIGIL);

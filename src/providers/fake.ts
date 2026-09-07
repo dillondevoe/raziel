@@ -3,7 +3,10 @@ import type { ChatMessage, Provider, StreamChunk, ToolSpec } from "../provider";
 export class FakeProvider implements Provider {
   readonly name = "fake";
   calls: ChatMessage[][] = [];
-  optsLog: Array<{ model: string; sampling?: unknown; contextTokens?: number; tools?: ToolSpec[] }> = [];
+  // `system` is recorded here for the same reason the others are: it is a
+  // stream() input a test may need to assert on. It was absent until 2026-09-07,
+  // which is precisely why nothing noticed that no call site ever set it.
+  optsLog: Array<{ model: string; system?: string; sampling?: unknown; contextTokens?: number; tools?: ToolSpec[] }> = [];
   private i = 0;
   private toolScript: { name: string; args: unknown }[] = [];
 
@@ -18,7 +21,7 @@ export class FakeProvider implements Provider {
     sampling?: { temperature?: number; topP?: number }; contextTokens?: number; tools?: ToolSpec[];
   }): AsyncIterable<StreamChunk> {
     this.calls.push(opts.messages);
-    this.optsLog.push({ model: opts.model, sampling: opts.sampling, contextTokens: opts.contextTokens, tools: opts.tools });
+    this.optsLog.push({ model: opts.model, system: opts.system, sampling: opts.sampling, contextTokens: opts.contextTokens, tools: opts.tools });
     const script = this.scripts[this.i++] ?? [];
     for (const text of script) {
       if (opts.signal?.aborted) return;

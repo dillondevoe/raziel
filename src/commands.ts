@@ -5,6 +5,7 @@ import { OllamaProvider } from "./providers/ollama";
 import { OpenAICompatProvider } from "./providers/openai_compat";
 import type { Provider } from "./provider";
 import { getProfile, listProfiles, type ModelProfile } from "./profiles";
+import { loadSystemPrompt } from "./system_prompt";
 import { sanitizeForTerminal } from "./term";
 import type { ToolDeps } from "./engine_tool_call";
 import { sliceTools } from "./tools/registry";
@@ -26,7 +27,16 @@ export function providerFor(p: ModelProfile, fetchImpl?: typeof fetch): Provider
       return new OllamaProvider({ baseUrl: p.baseUrl, fetchImpl });
     case "openai-compat": {
       if (!p.baseUrl) throw new Error(`profile ${p.id} missing baseUrl`);
-      return new OpenAICompatProvider({ baseUrl: p.baseUrl, apiKey: process.env.RAZIEL_COMPAT_KEY });
+      // A profile that names an apiKeyEnv is declaring it needs a key. Refuse
+      // here rather than fall through to the provider's keyless placeholder:
+      // "not-needed" reaching a keyed endpoint comes back as that endpoint's
+      // 401, i.e. a config error wearing an upstream-outage costume, with
+      // nothing anywhere naming the variable the user got wrong.
+      if (p.apiKeyEnv && !process.env[p.apiKeyEnv]) {
+        throw new Error(`profile ${p.id} requires ${p.apiKeyEnv} to be set`);
+      }
+      const apiKey = p.apiKeyEnv ? process.env[p.apiKeyEnv] : process.env.RAZIEL_COMPAT_KEY;
+      return new OpenAICompatProvider({ baseUrl: p.baseUrl, apiKey });
     }
   }
 }
@@ -113,7 +123,10 @@ export function createModelCommand(deps: {
       ? { registry: sliceTools(deps.tools.registry, next.maxToolSurface), ws: deps.tools.ws, approvals: deps.tools.approvals }
       : undefined;
     const store = deps.storeBox?.current ?? deps.store; // I1: prefer a live-resumed session over the startup one
-    deps.engineBox.current = new Engine({ provider, store, profile: next, tools });
+    // The persona travels with the profile, so a swap into astra picks up
+    // its systemFile and a swap out of it drops it — no retyping, and no
+    // stale persona left over from the previous profile.
+    deps.engineBox.current = new Engine({ provider, store, profile: next, system: loadSystemPrompt(next), tools });
     current = next;
     deps.write(statusLine(store, next.model, provider.name));
     deps.onSwap?.({ profile: next, providerName: provider.name });

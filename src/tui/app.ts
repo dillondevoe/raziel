@@ -2,6 +2,7 @@ import { Editor, type Terminal, type TUI } from "@earendil-works/pi-tui";
 import { Engine } from "../engine";
 import type { SessionStore } from "../session";
 import type { ModelProfile } from "../profiles";
+import { loadSystemPrompt } from "../system_prompt";
 import type { ToolDeps } from "../engine_tool_call";
 import type { BuiltinTool } from "../tools/files";
 import type { Workspace } from "../tools/workspace";
@@ -122,7 +123,7 @@ export function createTuiApp(deps: TuiAppDeps): { surface: TuiSurface; ready: Pr
         approvals,
       };
       const engineBox = {
-        current: new Engine({ provider: deps.provider, store: deps.store, profile: deps.profile, tools: tools0 }),
+        current: new Engine({ provider: deps.provider, store: deps.store, profile: deps.profile, system: loadSystemPrompt(deps.profile), tools: tools0 }),
       };
       const profileBox: ProfileBox = { current: deps.profile };
       // I1: shared with createModelCommand — whichever of /model, /session,
