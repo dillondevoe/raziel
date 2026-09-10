@@ -14,8 +14,11 @@ type QueuedChunk = { kind: "delta"; text: string } | { kind: "tool_call"; id: st
 // value).
 type ToolBlockAcc = { id: string; name: string; json: string };
 
-function toAnthropicTool(spec: ToolSpec): Anthropic.Tool {
-  return { name: spec.name, description: spec.description, input_schema: spec.inputSchema as Anthropic.Tool.InputSchema };
+// `rename` is applied to the advertised name and defaults to identity, so the
+// console-API-key path is byte-identical to what it was before lane (a): only
+// the OAuth path — the Claude Code door — gets canonicalized names.
+function toAnthropicTool(spec: ToolSpec, rename: (n: string) => string = (n) => n): Anthropic.Tool {
+  return { name: rename(spec.name), description: spec.description, input_schema: spec.inputSchema as Anthropic.Tool.InputSchema };
 }
 
 // Two KINDS of credential arrive through the same door. `sk-ant-api03-...` is a
@@ -69,6 +72,49 @@ export function asProviderError(err: unknown): Error {
   );
 }
 
+// Claude Code 2.x tool names, canonical casing. The OAuth endpoint is the Claude
+// Code door and is told it is talking to Claude Code (CLAUDE_CODE_IDENTITY
+// above), so a tool of ours that CORRESPONDS to one of these must go out under
+// Claude Code's spelling. Mirrored from @earendil-works/pi-ai
+// dist/api/anthropic-messages.js:44 (upstream source:
+// https://cchistory.mariozechner.at/data/prompts-2.1.11.md, refreshed via
+// https://github.com/badlogic/cchistory). Exported so it is greppable when it
+// goes stale, which it will — same reason as CLAUDE_CODE_UA_VERSION.
+export const CLAUDE_CODE_TOOLS = [
+  "Read", "Write", "Edit", "Bash", "Grep", "Glob", "AskUserQuestion",
+  "EnterPlanMode", "ExitPlanMode", "KillShell", "NotebookEdit", "Skill",
+  "Task", "TaskOutput", "TodoWrite", "WebFetch", "WebSearch",
+] as const;
+
+const ccLookup = new Map<string, string>(CLAUDE_CODE_TOOLS.map((t) => [t.toLowerCase(), t]));
+
+/** Outbound: our tool name -> Claude Code's canonical casing when the two
+ * correspond case-insensitively, otherwise unchanged. Of raziel's seven
+ * builtins exactly two correspond (grep -> Grep, glob -> Glob); `read_file` is
+ * NOT `Read` and `fetch` is NOT `WebFetch`, so most names pass straight
+ * through. */
+export function toClaudeCodeName(name: string): string {
+  return ccLookup.get(name.toLowerCase()) ?? name;
+}
+
+/** Inbound: Claude Code's spelling -> the name WE advertised, which is what the
+ * engine's registry is keyed on.
+ *
+ * Built from the advertised tool set and NOT from CLAUDE_CODE_TOOLS, and that is
+ * the load-bearing half. Canonicalization is lossy in principle — a static table
+ * can only invert the names that happen to be in it, so it would hand the engine
+ * `Read_File` for an advertised `read_file` and the dispatcher would answer
+ * "unknown tool". The only authority on what was advertised is what was
+ * advertised. pi-ai's own fromClaudeCodeName takes `tools` for this reason.
+ *
+ * A name matching nothing advertised is returned UNCHANGED rather than guessed
+ * at: inversion must not invent a dispatchable name out of a hallucinated one. */
+export function fromClaudeCodeName(name: string, tools?: ToolSpec[]): string {
+  if (!tools || tools.length === 0) return name;
+  const lower = name.toLowerCase();
+  return tools.find((t) => t.name.toLowerCase() === lower)?.name ?? name;
+}
+
 export class AnthropicProvider implements Provider {
   readonly name = "anthropic";
   private client: Anthropic;
@@ -118,7 +164,9 @@ export class AnthropicProvider implements Provider {
       messages: opts.messages,
       ...(opts.sampling?.temperature !== undefined ? { temperature: opts.sampling.temperature } : {}),
       ...(opts.sampling?.topP !== undefined ? { top_p: opts.sampling.topP } : {}),
-      ...(opts.tools && opts.tools.length > 0 ? { tools: opts.tools.map(toAnthropicTool) } : {}),
+      ...(opts.tools && opts.tools.length > 0
+        ? { tools: opts.tools.map((t) => toAnthropicTool(t, this.oauth ? toClaudeCodeName : undefined)) }
+        : {}),
     });
     opts.signal?.addEventListener("abort", () => stream.abort(), { once: true });
 
@@ -136,7 +184,15 @@ export class AnthropicProvider implements Provider {
     const toolBlocks = new Map<number, ToolBlockAcc>();
     stream.on("streamEvent", (event) => {
       if (event.type === "content_block_start" && event.content_block.type === "tool_use") {
-        toolBlocks.set(event.index, { id: event.content_block.id, name: event.content_block.name, json: "" });
+        // The INVERSE of the outbound rename, and it must be here rather than
+        // left to the engine: the registry is keyed on the names we advertised
+        // (engine_tool_call.ts looks up `tools.registry.get(call.name)`), so a
+        // `Grep` that reached the dispatcher unconverted would answer "unknown
+        // tool" — normalizing only outbound turns a working path into a broken
+        // one. Inverted against opts.tools, never against CLAUDE_CODE_TOOLS; see
+        // fromClaudeCodeName for why a static table is not enough.
+        const name = this.oauth ? fromClaudeCodeName(event.content_block.name, opts.tools) : event.content_block.name;
+        toolBlocks.set(event.index, { id: event.content_block.id, name, json: "" });
       } else if (event.type === "content_block_delta" && event.delta.type === "input_json_delta") {
         const block = toolBlocks.get(event.index);
         if (block) block.json += event.delta.partial_json;
