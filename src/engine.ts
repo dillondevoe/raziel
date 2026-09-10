@@ -47,7 +47,7 @@ export class Engine {
     try {
       this.store.append(e);
     } catch {
-      // swallow store failures
+      // Error reporting is best-effort on a failed store; normal work is not.
     }
   }
 
@@ -76,28 +76,29 @@ export class Engine {
       // Persist assistant_message only for "end" or "interrupt" with text
       if (stop === "end" || (stop === "interrupt" && acc.length > 0)) {
         const msg = mkEvent("assistant_message", { turn, text: acc });
-        this.tryAppend(msg);
+        store.append(msg);
         out.push(msg);
       }
       const end = mkEvent("turn_end", { turn, stop });
-      this.tryAppend(end);
+      store.append(end);
       out.push(end);
       return out;
     };
 
-    if (tools) {
-      yield* runToolTurn({
-        provider, model, system, sampling, contextTokens, turn, tools,
-        signal: o?.signal,
-        getContext: () => this.context(),
-        tryAppend: (e) => this.tryAppend(e),
-        onDelta: (t) => { acc += t; },
-        finish,
-      });
-      return;
-    }
-
     try {
+      if (tools) {
+        yield* runToolTurn({
+          provider, model, system, sampling, contextTokens, turn, tools,
+          signal: o?.signal,
+          getContext: () => this.context(),
+          // A missing audit record stops the turn before further tool work.
+          tryAppend: (e) => store.append(e),
+          onDelta: (t) => { acc += t; },
+          finish,
+        });
+        return;
+      }
+
       for await (const chunk of provider.stream({ model, system, messages: this.context(), signal: o?.signal, sampling, contextTokens })) {
         if (chunk.type === "done") { sawDone = true; continue; }   // a delivered done is always recorded
         if (o?.signal?.aborted) { interrupted = true; break; }
@@ -108,7 +109,8 @@ export class Engine {
     } catch (err) {
       const e = mkEvent("error", { turn, message: err instanceof Error ? err.message : String(err) });
       this.tryAppend(e); yield e;
-      yield* finish("error");
+      const end = mkEvent("turn_end", { turn, stop: "error" });
+      this.tryAppend(end); yield end;
     }
   }
 }

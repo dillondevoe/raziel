@@ -1,4 +1,4 @@
-import { readdir } from "node:fs/promises";
+import { readdir, stat } from "node:fs/promises";
 import { isAbsolute, join, relative } from "node:path";
 import type { BuiltinTool } from "./files";
 import type { Workspace } from "./workspace";
@@ -35,7 +35,7 @@ async function walkFiles(root: string, cap: number): Promise<string[]> {
 export const grepTool: BuiltinTool = {
   spec: {
     name: "grep",
-    description: "Search for a regex pattern in a file, or across the workspace when path is omitted.",
+    description: "Search for a regex pattern in a file or directory (defaults to the workspace). Directory searches are capped at 200 files with a truncation notice.",
     inputSchema: {
       type: "object",
       properties: {
@@ -60,24 +60,24 @@ export const grepTool: BuiltinTool = {
         return { ok: false, output: `grep: invalid pattern: ${errMessage(e)}` };
       }
 
-      const files: string[] = args.path !== undefined
-        ? [ws.contain(args.path)]
-        : await walkFiles(ws.root, MAX_WALK_FILES);
+      const path = ws.contain(args.path ?? ".");
+      // One extra filename detects truncation without reading past the cap.
+      const files = (await stat(path)).isDirectory()
+        ? await walkFiles(path, MAX_WALK_FILES + 1)
+        : [path];
 
       const matches: string[] = [];
-      for (const file of files) {
-        let text: string;
-        try {
-          text = await Bun.file(file).text();
-        } catch {
-          continue;
-        }
+      for (const file of files.slice(0, MAX_WALK_FILES)) {
+        const text = await Bun.file(ws.contain(file)).text();
         const lines = text.split("\n");
         for (let i = 0; i < lines.length; i++) {
           if (re.test(lines[i]!)) {
             matches.push(`${relative(ws.root, file)}:${i + 1}:${lines[i]}`);
           }
         }
+      }
+      if (files.length > MAX_WALK_FILES) {
+        matches.push(`[truncated: searched ${MAX_WALK_FILES} files; narrow path]`);
       }
       return { ok: true, output: matches.join("\n") };
     } catch (e) {
