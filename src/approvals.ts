@@ -84,7 +84,7 @@ export class ApprovalManager {
     args: unknown,
     risk: RiskClass,
     ws: Workspace,
-  ): Promise<{ decision: "allow" | "deny"; argsHash: string }> {
+  ): Promise<{ decision: "allow" | "deny"; argsHash: string; persistRule?: () => void }> {
     const hash = argsHash(tool, args);
 
     if (risk === "critical") {
@@ -113,8 +113,11 @@ export class ApprovalManager {
           ) + "\n",
         );
       } else {
-        this.rules.add({ tool, pattern });
-        this.rules.save(this.rulesPath);
+        // Deferred: the caller persists the approval_decision event FIRST, then calls this.
+        // A rule that outlives a missing decision record auto-allows with no audit trail
+        // (review, PR #1).
+        const persistRule = () => { this.rules.add({ tool, pattern }); this.rules.save(this.rulesPath); };
+        return { decision: "allow", argsHash: hash, persistRule };
       }
       return { decision: "allow", argsHash: hash };
     }

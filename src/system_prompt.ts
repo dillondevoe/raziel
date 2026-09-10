@@ -41,7 +41,13 @@ export function loadSystemPrompt(
   if (!profile.systemFile) return undefined;
   const read = deps?.readFile ?? ((path: string) => readFileSync(path, "utf8"));
   const warn = deps?.warn ?? ((msg: string) => { process.stderr.write(msg); });
-  const path = expandHome(profile.systemFile, deps?.home ?? realHome());
+  const home = deps?.home ?? realHome();
+  // A relative systemFile lives in raziel's OWN state dir — the same root the session log
+  // uses (RAZIEL_HOME, else ~/.raziel) — so sessions and persona never split roots and a
+  // test's RAZIEL_HOME isolates both (review, PR #1). "~/" and absolute paths stay as written.
+  const stateDir = deps?.home !== undefined ? join(deps.home, ".raziel") : (process.env.RAZIEL_HOME ?? join(home, ".raziel"));
+  const raw = profile.systemFile;
+  const path = raw.startsWith("~") || isAbsolute(raw) ? expandHome(raw, home) : join(stateDir, raw);
   try {
     const text = read(path);
     if (text.trim() === "") {

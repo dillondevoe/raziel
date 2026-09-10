@@ -26,7 +26,7 @@ export type RunToolTurnOpts = {
   getContext(): ChatMessage[];
   tryAppend(e: SessionEvent): void;
   onDelta(text: string): void;
-  finish(stop: Stop): EngineEvent[];
+  finish(stop: Stop): Iterable<EngineEvent>;
 };
 
 /** One provider.stream() round: yields assistant_delta events (via onDelta

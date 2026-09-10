@@ -47,7 +47,7 @@ export class Engine {
     try {
       this.store.append(e);
     } catch {
-      // swallow store failures
+      // Error reporting is best-effort on a failed store; normal work is not.
     }
   }
 
@@ -71,33 +71,39 @@ export class Engine {
     let interrupted = false;
     let sawDone = false;
 
-    const finish = (stop: "end" | "interrupt" | "error"): EngineEvent[] => {
-      const out: EngineEvent[] = [];
+    // Each event is yielded the moment ITS append succeeds, so a store failure on the second
+    // append never hides a first that already persisted (review, PR #1: assistant_message
+    // durable but never yielded, and no turn_end for the Book to flush on).
+    const finish = function* (stop: "end" | "interrupt" | "error"): Generator<EngineEvent> {
       // Persist assistant_message only for "end" or "interrupt" with text
       if (stop === "end" || (stop === "interrupt" && acc.length > 0)) {
         const msg = mkEvent("assistant_message", { turn, text: acc });
-        this.tryAppend(msg);
-        out.push(msg);
+        store.append(msg);
+        yield msg;
       }
       const end = mkEvent("turn_end", { turn, stop });
-      this.tryAppend(end);
-      out.push(end);
-      return out;
+      store.append(end);
+      yield end;
     };
-
-    if (tools) {
-      yield* runToolTurn({
-        provider, model, system, sampling, contextTokens, turn, tools,
-        signal: o?.signal,
-        getContext: () => this.context(),
-        tryAppend: (e) => this.tryAppend(e),
-        onDelta: (t) => { acc += t; },
-        finish,
-      });
-      return;
-    }
+    // Audit records (assistant_message, turn_end, tool_request/result, approval_*) hard-fail
+    // into the error boundary. Error-class events stay best-effort: a store failure must not
+    // REPLACE the provider's own diagnostic with the store's (review, PR #1).
+    const appendAudit = (e: SessionEvent) => { if (e.type === "error") this.tryAppend(e); else store.append(e); };
 
     try {
+      if (tools) {
+        yield* runToolTurn({
+          provider, model, system, sampling, contextTokens, turn, tools,
+          signal: o?.signal,
+          getContext: () => this.context(),
+          // A missing audit record stops the turn before further tool work.
+          tryAppend: appendAudit,
+          onDelta: (t) => { acc += t; },
+          finish,
+        });
+        return;
+      }
+
       for await (const chunk of provider.stream({ model, system, messages: this.context(), signal: o?.signal, sampling, contextTokens })) {
         if (chunk.type === "done") { sawDone = true; continue; }   // a delivered done is always recorded
         if (o?.signal?.aborted) { interrupted = true; break; }
@@ -108,7 +114,8 @@ export class Engine {
     } catch (err) {
       const e = mkEvent("error", { turn, message: err instanceof Error ? err.message : String(err) });
       this.tryAppend(e); yield e;
-      yield* finish("error");
+      const end = mkEvent("turn_end", { turn, stop: "error" });
+      this.tryAppend(end); yield end;
     }
   }
 }
