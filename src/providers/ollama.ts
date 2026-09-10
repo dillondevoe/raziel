@@ -5,20 +5,26 @@ type OllamaMessage = {
   role: "system" | "user" | "assistant" | "tool";
   content: string;
   tool_calls?: OllamaToolCall[];
-  // Ollama accepts (and newer builds echo) a tool name on a result message.
-  // Sent because ORDER IS THE ONLY JOIN here -- see toOllamaMessages -- and a
-  // name MAY give the model a second handle on which result is which.
+  // Ollama accepts (and newer builds echo) a tool name on a result message. It
+  // is NOT a second handle on which result is which -- that was measured, and
+  // the answer is that the model IGNORES it. Sent anyway, for human
+  // readability of a wire dump and for a provider that does honour it.
   //
-  // "MAY" is doing real work: whether ollama or the model honors this name is
-  // UNVERIFIED. Augur's wire probe (2026-09-10, qwen2.5:7b, 2 parallel calls)
-  // showed the join is positional and that a CORRECT tool_call_id is inert --
-  // but his result messages carried `content` only, with no `tool_name`, so his
-  // arms say nothing about this field. Sending it is free and cannot hurt; do
-  // NOT read it as a fallback that makes a dropped or reordered result
-  // recoverable. The positional discipline below is the only thing holding.
-  // The arm that would settle it: replay two calls REVERSED with each result's
-  // correct tool_name attached. If the answers stay swapped, this field is
-  // decoration too.
+  // Augur's probes, qwen2.5:7b, 2 parallel calls, 2026-09-10. First round:
+  // the join is positional, and a CORRECT tool_call_id is inert. Second round
+  // (arm C-prime, run because his first probe sent `content` only and so said
+  // nothing about THIS field): results replayed so that name and position
+  // DISAGREE. Reversed + correct tool_name -> still swapped; reversed +
+  // correct name AND id -> still swapped; and the arm that settles it,
+  // IN ORDER + a flatly WRONG tool_name -> still CORRECT. A field that can
+  // neither repair a broken join nor corrupt a working one is not
+  // participating in the join. The model narrated it unprompted: "based on
+  // the first response number... based on the second response number."
+  //
+  // So nothing in this mapping may lean on it. The positional discipline in
+  // toOllamaMessages is the only thing holding, and a dropped or reordered
+  // result is NOT recoverable from this field. Open: >2 calls, and repeated
+  // same-tool calls, where a name could not disambiguate even in principle.
   tool_name?: string;
 };
 
