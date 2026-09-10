@@ -1,5 +1,5 @@
 import { test, expect, beforeEach } from "bun:test";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Engine } from "../src/engine";
@@ -313,4 +313,84 @@ test("openai-compat: a tool message expands to one toolResult message per call",
   expect(res).toHaveLength(2);
   expect(res[0]).toMatchObject({ role: "toolResult", toolCallId: "c1", toolName: "read_file", isError: false });
   expect(res[1]).toMatchObject({ toolCallId: "c2", isError: true });
+});
+
+// ---------------------------------------------------------------------------
+// (9) THE DROP PATH. Augur's arm M, 2026-09-10, qwen2.5:7b, n=3: with the
+// MIDDLE of three `read_file` results missing, the model does not report a
+// gap -- the positional join slides `c`'s bytes into `b`'s slot and it then
+// re-requests `/c.txt`, THE ONE IT ALREADY HAS. The retry loop is aimed away
+// from the damage, so it cannot repair it, and the turn finishes holding a
+// confidently wrong `b`. An omission is therefore not a degraded error, it is
+// strictly worse than one.
+//
+// The engine already synthesises `ok:false` for a request with no persisted
+// result, and arm (4) covers a DENIAL -- but a denial writes a real result
+// event, so it never exercises the synthesis. This arm exercises the path
+// that does: `replay()` SKIPS lines failing isValidEvent, so a corrupt or
+// truncated result line deletes a result while its request survives. Same
+// shape reaches here from a failed store append or any future event filter.
+//
+// SHOWN FIRING: with the `: { ... "no result recorded" }` branch in
+// Engine.context() replaced by a `continue`, this arm goes red -- and the
+// other THIRTEEN arms in this file stayed green, so the existing battery
+// could not see this path at all. It dies on the length assertion (2 results
+// for 3 calls), which is BEFORE the wire assertion below, so the rotation
+// itself was confirmed separately rather than by that red: feeding
+// toOllamaMessages a 3-call round with b's result missing emits two `tool`
+// messages, ["111","333"], i.e. slot b carrying c's bytes exactly as Augur
+// measured against the live model. Mutation reverted; the branch ships
+// unchanged.
+// ---------------------------------------------------------------------------
+test("a result line dropped by replay still occupies its slot -- no rotation, no silent gap", async () => {
+  const store = new SessionStore("thc-9");
+  const ws = mkws();
+  writeFileSync(join(ws.root, "a.txt"), "111");
+  writeFileSync(join(ws.root, "b.txt"), "222");
+  writeFileSync(join(ws.root, "c.txt"), "333");
+  const deps = { registry: builtinTools(), ws, approvals: mkApprovals(async () => "allow") };
+
+  const p1 = new Scripted([{ toolCalls: [
+    { name: "read_file", args: { path: "a.txt" } },
+    { name: "read_file", args: { path: "b.txt" } },
+    { name: "read_file", args: { path: "c.txt" } },
+  ] }, { delta: ["ok"] }]);
+  await drain(new Engine({ provider: p1, store, model: "m", tools: deps }).send("read all three"));
+
+  // Corrupt the MIDDLE result in place: `ok` becomes a string, so the line
+  // still parses as JSON and is still rejected by isValidEvent -- which is
+  // precisely the silent case. The request line is left untouched.
+  const lines = readFileSync(store.path, "utf8").split("\n").filter((l) => l.length > 0);
+  let hit = 0;
+  const patched = lines.map((l) => {
+    const o = JSON.parse(l) as Record<string, unknown>;
+    if (o.type === "tool_result" && typeof o.output === "string" && o.output.includes("222")) {
+      hit++; return JSON.stringify({ ...o, ok: "yes" });
+    }
+    return l;
+  });
+  expect(hit).toBe(1);            // the fixture must actually plant the defect
+  writeFileSync(store.path, patched.join("\n") + "\n");
+
+  const p2 = new Scripted([{ delta: ["done"] }]);
+  await drain(new Engine({ provider: p2, store: new SessionStore("thc-9"), model: "m", tools: deps }).send("again"));
+
+  const msgs = p2.calls[0]!;
+  const asst = msgs.find((m) => m.role === "assistant" && (m as any).toolCalls?.length) as Extract<ChatMessage, { role: "assistant" }>;
+  const tool = msgs.find((m) => m.role === "tool") as Extract<ChatMessage, { role: "tool" }>;
+  expect(asst.toolCalls).toHaveLength(3);
+  // The invariant that makes the rotation impossible: one result per call,
+  // always, whatever replay handed us.
+  expect(tool.results).toHaveLength(3);
+  expect(tool.results.map((r) => r.ok)).toEqual([true, false, true]);
+  expect(tool.results[0]!.output).toContain("111");
+  expect(tool.results[1]!.output).toContain("no result recorded");
+  expect(tool.results[2]!.output).toContain("333");
+
+  // And on the wire, where the join is positional and nothing can repair it:
+  // slot b must NOT carry c's bytes.
+  const wire = toOllamaMessages([asst, tool]);
+  const toolMsgs = wire.filter((m) => m.role === "tool");
+  expect(toolMsgs).toHaveLength(3);
+  expect(toolMsgs[1]!.content).not.toContain("333");
 });
