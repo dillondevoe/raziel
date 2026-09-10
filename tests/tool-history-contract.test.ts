@@ -265,6 +265,46 @@ test("ollama: results keep request order and a failed call still occupies its sl
   expect(results.map((m) => m.content)).toEqual(["A", "denied by user", "C"]);
 });
 
+// ---------------------------------------------------------------------------
+// (7b) THE ARM ABOVE CANNOT TELL A POSITIONAL JOIN FROM AN ID-KEYED ONE, because
+// its fixture's ids agree with its array order. Augur measured the same blind
+// spot on the wire (2026-09-10, qwen2.5:7b): his single-call probe "could not
+// tell 'joins by order' from 'has exactly one slot to join into'", and his arm C
+// showed that a CORRECT id, on the exact case where an id exists to
+// disambiguate, changes nothing -- the id is inert on this provider.
+//
+// So this arm makes the two orderings DISAGREE: the results arrive c3, c1, c2 in
+// array order while their ids say c1, c2, c3. A mapper that sorted, indexed or
+// keyed by id would emit A, B, C and pass the arm above; only a positional
+// pass-through emits C, A, B. That is the whole point -- an implementation is
+// free to start using the id at any time and nothing else here would notice.
+//
+// Note the direction, because it is the OPPOSITE of the rule Augur derived for
+// his live probe. There, payloads had to be mutually indistinguishable so the
+// model could not re-pair them semantically. Here there is no model to exercise
+// common sense, and identical payloads would make a swap unobservable: a unit
+// arm needs payloads it can tell apart, and ids it CANNOT infer the order from.
+// ---------------------------------------------------------------------------
+test("ollama: the join is POSITIONAL, not id-keyed -- results follow array order when ids disagree", () => {
+  const out = toOllamaMessages([
+    { role: "assistant", content: "", toolCalls: [
+      { id: "c1", name: "read_file", args: { path: "a" } },
+      { id: "c2", name: "read_file", args: { path: "b" } },
+      { id: "c3", name: "read_file", args: { path: "c" } },
+    ] },
+    // Deliberately NOT in id order. An id-keyed mapper reorders to A, B, C.
+    { role: "tool", results: [
+      { id: "c3", name: "read_file", ok: true, output: "C" },
+      { id: "c1", name: "read_file", ok: true, output: "A" },
+      { id: "c2", name: "read_file", ok: false, output: "denied by user" },
+    ] },
+  ]);
+  const results = out.slice(1);
+  expect(results.map((m) => m.content)).toEqual(["C", "A", "denied by user"]);
+  // And the id never reaches the wire at all -- there is no field for it.
+  expect(JSON.stringify(results)).not.toContain("c1");
+});
+
 test("openai-compat: a tool message expands to one toolResult message per call", () => {
   const res = toCompatMessages({ role: "tool", results: [
     { id: "c1", name: "read_file", ok: true, output: "A" },

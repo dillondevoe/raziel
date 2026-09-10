@@ -7,7 +7,18 @@ type OllamaMessage = {
   tool_calls?: OllamaToolCall[];
   // Ollama accepts (and newer builds echo) a tool name on a result message.
   // Sent because ORDER IS THE ONLY JOIN here -- see toOllamaMessages -- and a
-  // name gives the model a second, redundant handle on which result is which.
+  // name MAY give the model a second handle on which result is which.
+  //
+  // "MAY" is doing real work: whether ollama or the model honors this name is
+  // UNVERIFIED. Augur's wire probe (2026-09-10, qwen2.5:7b, 2 parallel calls)
+  // showed the join is positional and that a CORRECT tool_call_id is inert --
+  // but his result messages carried `content` only, with no `tool_name`, so his
+  // arms say nothing about this field. Sending it is free and cannot hurt; do
+  // NOT read it as a fallback that makes a dropped or reordered result
+  // recoverable. The positional discipline below is the only thing holding.
+  // The arm that would settle it: replay two calls REVERSED with each result's
+  // correct tool_name attached. If the answers stay swapped, this field is
+  // decoration too.
   tool_name?: string;
 };
 
