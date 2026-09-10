@@ -39,6 +39,7 @@ export function renderBook(events: SessionEvent[]): string {
   const lines: string[] = [];
   let userText: string | null = null;
   let turnBody: TurnBody = null;
+  let usageLines: string[] = [];   // buffered with the turn; the store order is user, usage, assistant, turn_end
 
   for (const e of events) {
     if (e.type === "user_message") {
@@ -48,6 +49,12 @@ export function renderBook(events: SessionEvent[]): string {
       turnBody = { kind: "text", text: e.text };
     } else if (e.type === "error") {
       turnBody = { kind: "error", message: e.message };
+    } else if (e.type === "usage") {
+      const counts = [`input ${e.input_tokens}`, `output ${e.output_tokens}`];
+      if (e.reasoning_tokens !== undefined) counts.push(`reasoning ${e.reasoning_tokens}`);
+      if (e.cache_read_tokens !== undefined) counts.push(`cache read ${e.cache_read_tokens}`);
+      if (e.cache_write_tokens !== undefined) counts.push(`cache write ${e.cache_write_tokens}`);
+      usageLines.push(`  ${paint(DIM, `usage ${sanitizeForTerminal(e.provider)}/${sanitizeForTerminal(e.model)}: ${counts.join(", ")} tokens`)}`);
     } else if (e.type === "turn_end") {
       // Render the accumulated turn
       if (userText !== null) {
@@ -63,6 +70,8 @@ export function renderBook(events: SessionEvent[]): string {
         } else if (e.stop === "interrupt") {
           lines.push(`  ${paint(YELLOW, "⊘ interrupted")}`);
         }
+        for (const u of usageLines) lines.push(u);
+        usageLines = [];
         lines.push(`  ${paint(DIM, `· ${e.stop} ${hms(e.ts)}`)}`);
         lines.push("");
       }
@@ -89,6 +98,8 @@ export function renderBook(events: SessionEvent[]): string {
       }
     }
   }
+
+  for (const u of usageLines) lines.push(u);   // a turn cut off before turn_end still shows what it cost
 
   return lines.join("\n") + "\n";
 }

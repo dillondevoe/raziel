@@ -37,8 +37,8 @@ export type TuiMainLoopOpts = {
  * interruptMark on an interrupted stop, else endAssistant; `error` ->
  * errorLine. Status gets a coarse "streaming" activity for the whole turn,
  * a per-round "tool" activity while any tool_request is in flight, and
- * "idle" once the turn ends — see Status's own doc comment for why nothing
- * finer (token counts, tok/s) belongs here. */
+ * "idle" once the turn ends. Usage events update its known session total;
+ * estimated counts and tok/s remain forbidden. */
 export async function runTuiMainLoop(opts: TuiMainLoopOpts): Promise<void> {
   for await (const raw of opts.input) {
     const text = raw.trim();
@@ -64,6 +64,9 @@ export async function runTuiMainLoop(opts: TuiMainLoopOpts): Promise<void> {
             begun.add(e.turn);
           }
           opts.transcript.appendDelta(e.turn, e.text);
+          break;
+        case "usage":
+          opts.status.addUsage(e);
           break;
         case "approval_request":
           round++;

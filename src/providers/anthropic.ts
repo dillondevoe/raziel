@@ -125,6 +125,7 @@ export class AnthropicProvider implements Provider {
     const queue: QueuedChunk[] = [];
     let done = false; let wake: (() => void) | null = null;
     let streamErr: unknown = null;
+    let usage: Anthropic.Usage | undefined;
     stream.on("text", (t: string) => { queue.push({ kind: "delta", text: t }); wake?.(); });
 
     // Own accumulation of tool_use blocks off the raw event stream — deliberately
@@ -160,7 +161,9 @@ export class AnthropicProvider implements Provider {
       }
     });
 
-    stream.finalMessage().catch((e) => { streamErr = streamErr ?? e; }).finally(() => { done = true; wake?.(); });
+    // The SDK merges message_start/message_delta cumulative counts by overwrite.
+    // Use its final snapshot, not a sum of deltas or a second wire parser.
+    stream.finalMessage().then((message) => { usage = message.usage; }).catch((e) => { streamErr = streamErr ?? e; }).finally(() => { done = true; wake?.(); });
 
     while (!done || queue.length > 0) {
       if (queue.length === 0) await new Promise<void>((r) => { wake = r; });
@@ -174,6 +177,16 @@ export class AnthropicProvider implements Provider {
     }
     if (opts.signal?.aborted) return;
     if (streamErr) throw asProviderError(streamErr);
-    yield { type: "done", stopReason: "end" };
+    if (usage && typeof usage.input_tokens === "number" && typeof usage.output_tokens === "number") {
+      const reasoning = usage.output_tokens_details?.thinking_tokens;
+      yield { type: "usage", usage: {
+        input_tokens: usage.input_tokens,
+        output_tokens: usage.output_tokens,
+        ...(reasoning != null ? { reasoning_tokens: reasoning } : {}),
+        ...(usage.cache_read_input_tokens != null ? { cache_read_tokens: usage.cache_read_input_tokens } : {}),
+        ...(usage.cache_creation_input_tokens != null ? { cache_write_tokens: usage.cache_creation_input_tokens } : {}),
+      } };
+    }
+    if (!opts.signal?.aborted) yield { type: "done", stopReason: "end" };
   }
 }

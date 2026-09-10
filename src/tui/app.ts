@@ -1,6 +1,7 @@
 import { Editor, type Terminal, type TUI } from "@earendil-works/pi-tui";
 import { Engine } from "../engine";
 import type { SessionStore } from "../session";
+import type { SessionEvent } from "../events";
 import type { ModelProfile } from "../profiles";
 import { loadSystemPrompt } from "../system_prompt";
 import type { ToolDeps } from "../engine_tool_call";
@@ -18,6 +19,10 @@ import { makeTuiAsk, makeTuiAskUi } from "./approvals";
 import { TuiSurface } from "./surface";
 import { runTuiMainLoop } from "./loop";
 import { EDITOR_THEME, withCancelableAsk, systemLine, adaptEditorToLines } from "./app_helpers";
+
+function safeReplay(store: SessionStore): SessionEvent[] {
+  try { return store.replay(); } catch { return []; }
+}
 
 // M1c Task 5 — the real pi-tui wiring: mounts Transcript/Status/Editor/the
 // approval card onto ONE running TuiAltScreen (via TuiSurface's onReady
@@ -108,7 +113,9 @@ export function createTuiApp(deps: TuiAppDeps): { surface: TuiSurface; ready: Pr
       const transcript = new Transcript(tui, () => tui.requestRender());
       const status = new Status(tui, () => tui.requestRender());
       status.setProfile(deps.profile, deps.provider.name);
-      status.setSession(deps.store.id);
+      // replay() reads the session file; an unreadable one (EACCES, a conflict dir wearing
+      // the name) must degrade to an empty total, not exit the process at boot (review).
+      status.setSession(deps.store.id, safeReplay(deps.store));
 
       const write = (s: string) => systemLine(tui, s);
 
@@ -153,7 +160,7 @@ export function createTuiApp(deps: TuiAppDeps): { surface: TuiSurface; ready: Pr
         providerForFn: deps.providerForFn,
         write,
         onResumed: (info) => {
-          status.setSession(info.sessionId);
+          status.setSession(info.sessionId, safeReplay(storeBox.current));
           status.setProfile(profileBox.current, info.providerName);
         },
       });

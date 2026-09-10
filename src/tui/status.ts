@@ -1,13 +1,15 @@
 import { type Component, Container, stripTerminalSequences } from "@earendil-works/pi-tui";
 import type { ModelProfile } from "../profiles";
+import type { SessionEvent } from "../events";
+import type { TokenUsage } from "../provider";
 import { sanitizeForTerminal } from "../term";
 import { MAX_ROUNDS } from "../engine_tools";
 
-// M1c Task 4 — the truthful statusline component. Holds known-true state only:
-// profile, session id, and current activity kind (idle/streaming/tool). NO
-// estimated/computed numbers (token counts, cost, tok/s) — see M1d deferral
-// forbidding such numbers. "streaming Ns" renders elapsed seconds from
-// startedAt, which is measured ground truth, not estimated.
+// M1c Task 4 / Phase 1.5: holds known-true state only. The M1d rule still
+// forbids estimated numbers (tokens, cost, tok/s). Session token totals sum
+// only provider-reported usage events, never contextTokens or text lengths.
+// "Known" is explicit: unreported turns are absent, not measured zero.
+// "streaming Ns" renders measured elapsed seconds from startedAt.
 //
 // Implements the pi-tui Component interface. Mounted onto a caller-supplied
 // Container (same pattern as Transcript); never holds a TUI reference. For
@@ -29,6 +31,11 @@ import { MAX_ROUNDS } from "../engine_tools";
 /** See the M1 note above: the same two-layer strip transcript.ts uses. */
 function sanitize(s: string): string {
   return stripTerminalSequences(sanitizeForTerminal(s));
+}
+
+function knownTokens(usage: TokenUsage): number {
+  // Cache counts are disjoint from input; reasoning is already in output.
+  return usage.input_tokens + usage.output_tokens + (usage.cache_read_tokens ?? 0) + (usage.cache_write_tokens ?? 0);
 }
 
 type Activity =
@@ -58,6 +65,7 @@ export class Status {
   // still renders SOMETHING sane once a profile is set (see setProfile).
   private providerName: string = "";
   private sessionId: string = "";
+  private tokenTotal: number | undefined;
   private activity: Activity = { kind: "idle" };
   private now: () => number = () => Date.now();
   private cachedLine: string | undefined;
@@ -92,8 +100,18 @@ export class Status {
     this.requestRender?.();
   }
 
-  setSession(id: string): void {
+  setSession(id: string, events: SessionEvent[] = []): void {
     this.sessionId = id;
+    this.tokenTotal = undefined;
+    for (const e of events) {
+      if (e.type === "usage") this.tokenTotal = (this.tokenTotal ?? 0) + knownTokens(e);
+    }
+    this.invalidateCache();
+    this.requestRender?.();
+  }
+
+  addUsage(usage: TokenUsage): void {
+    this.tokenTotal = (this.tokenTotal ?? 0) + knownTokens(usage);
     this.invalidateCache();
     this.requestRender?.();
   }
@@ -152,6 +170,7 @@ export class Status {
     // sequence regardless of where the 8-char cut later falls.
     const cleanId = sanitize(this.sessionId);
     parts.push(`session ${cleanId.slice(0, 8)}`);
+    if (this.tokenTotal !== undefined) parts.push(`known tokens ${this.tokenTotal}`);
 
     if (this.activity.kind === "tool") {
       parts.push(`tool round ${this.activity.round}/${MAX_ROUNDS}`);
