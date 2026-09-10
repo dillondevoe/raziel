@@ -59,8 +59,8 @@ export class OllamaProvider implements Provider {
         if (opts.signal?.aborted) return;
         throw err instanceof Error ? err : new Error(String(err));
       }
-      if (done) break;
-      buf += decoder.decode(value, { stream: true });
+      // Flush a final NDJSON record even when the server omits its trailing newline.
+      buf += done ? decoder.decode() + "\n" : decoder.decode(value, { stream: true });
 
       let idx: number;
       while ((idx = buf.indexOf("\n")) !== -1) {
@@ -69,7 +69,7 @@ export class OllamaProvider implements Provider {
         if (!line) continue;
         if (opts.signal?.aborted) return;
 
-        let parsed: { message?: { content?: string }; done?: boolean };
+        let parsed: { message?: { content?: string }; done?: boolean; prompt_eval_count?: number; eval_count?: number };
         try {
           parsed = JSON.parse(line);
         } catch {
@@ -78,7 +78,10 @@ export class OllamaProvider implements Provider {
 
         if (parsed.done === true) {
           if (opts.signal?.aborted) return;
-          yield { type: "done", stopReason: "end" };
+          if (typeof parsed.prompt_eval_count === "number" && typeof parsed.eval_count === "number") {
+            yield { type: "usage", usage: { input_tokens: parsed.prompt_eval_count, output_tokens: parsed.eval_count } };
+          }
+          if (!opts.signal?.aborted) yield { type: "done", stopReason: "end" };
           return;
         }
         const content = parsed.message?.content;
@@ -87,6 +90,7 @@ export class OllamaProvider implements Provider {
           yield { type: "delta", text: content };
         }
       }
+      if (done) break;
     }
   }
 }

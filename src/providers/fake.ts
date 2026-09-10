@@ -1,4 +1,4 @@
-import type { ChatMessage, Provider, StreamChunk, ToolSpec } from "../provider";
+import type { ChatMessage, Provider, StreamChunk, ToolSpec, TokenUsage } from "../provider";
 
 export class FakeProvider implements Provider {
   readonly name = "fake";
@@ -10,7 +10,7 @@ export class FakeProvider implements Provider {
   private i = 0;
   private toolScript: { name: string; args: unknown }[] = [];
 
-  constructor(private scripts: string[][]) {}
+  constructor(private scripts: string[][], private usageScripts: (TokenUsage | undefined)[] = []) {}
 
   scriptTool(name: string, args: unknown): void {
     this.toolScript.push({ name, args });
@@ -22,6 +22,7 @@ export class FakeProvider implements Provider {
   }): AsyncIterable<StreamChunk> {
     this.calls.push(opts.messages);
     this.optsLog.push({ model: opts.model, system: opts.system, sampling: opts.sampling, contextTokens: opts.contextTokens, tools: opts.tools });
+    const usage = this.usageScripts[this.i];
     const script = this.scripts[this.i++] ?? [];
     for (const text of script) {
       if (opts.signal?.aborted) return;
@@ -31,6 +32,7 @@ export class FakeProvider implements Provider {
       if (opts.signal?.aborted) return;
       yield { type: "tool_call", id: crypto.randomUUID(), name: tool.name, args: tool.args };
     }
+    if (!opts.signal?.aborted && usage !== undefined) yield { type: "usage", usage };
     if (!opts.signal?.aborted) yield { type: "done", stopReason: "end" };
   }
 }

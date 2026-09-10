@@ -48,6 +48,12 @@ export function renderBook(events: SessionEvent[]): string {
       turnBody = { kind: "text", text: e.text };
     } else if (e.type === "error") {
       turnBody = { kind: "error", message: e.message };
+    } else if (e.type === "usage") {
+      const counts = [`input ${e.input_tokens}`, `output ${e.output_tokens}`];
+      if (e.reasoning_tokens !== undefined) counts.push(`reasoning ${e.reasoning_tokens}`);
+      if (e.cache_read_tokens !== undefined) counts.push(`cache read ${e.cache_read_tokens}`);
+      if (e.cache_write_tokens !== undefined) counts.push(`cache write ${e.cache_write_tokens}`);
+      lines.push(`  ${paint(DIM, `usage ${sanitizeForTerminal(e.provider)}/${sanitizeForTerminal(e.model)}: ${counts.join(", ")} tokens`)}`);
     } else if (e.type === "turn_end") {
       // Render the accumulated turn
       if (userText !== null) {

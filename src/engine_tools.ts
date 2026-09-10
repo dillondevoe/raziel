@@ -1,5 +1,5 @@
 import { mkEvent, type EngineEvent, type SessionEvent } from "./events";
-import type { ChatMessage, Provider } from "./provider";
+import type { ChatMessage, Provider, TokenUsage } from "./provider";
 import { toolSpecs } from "./tools/registry";
 import { handleToolCall, type ToolCall, type ToolDeps } from "./engine_tool_call";
 
@@ -26,6 +26,7 @@ export type RunToolTurnOpts = {
   getContext(): ChatMessage[];
   tryAppend(e: SessionEvent): void;
   onDelta(text: string): void;
+  onUsage(usage: TokenUsage): SessionEvent;
   finish(stop: Stop): Iterable<EngineEvent>;
 };
 
@@ -43,15 +44,18 @@ async function* streamRound(
   signal: AbortSignal | undefined,
   turn: string,
   onDelta: (text: string) => void,
+  onUsage: RunToolTurnOpts["onUsage"],
 ): AsyncGenerator<EngineEvent, { toolCalls: ToolCall[]; stop: Stop; errMessage?: string }> {
   const toolCalls: ToolCall[] = [];
   let interrupted = false;
   let sawDone = false;
+  let sawUsage = false;
 
   try {
     for await (const chunk of provider.stream({ model, system, messages, signal, sampling, contextTokens, tools: toolSpecsArr })) {
       if (chunk.type === "done") { sawDone = true; continue; }
       if (signal?.aborted) { interrupted = true; break; }
+      if (chunk.type === "usage" && !sawUsage) { sawUsage = true; yield onUsage(chunk.usage); }
       if (chunk.type === "delta") {
         onDelta(chunk.text);
         yield { type: "assistant_delta", turn, text: chunk.text };
@@ -74,7 +78,7 @@ async function* streamRound(
  * onDelta/finish so persisted assistant_message semantics stay identical.
  */
 export async function* runToolTurn(opts: RunToolTurnOpts): AsyncGenerator<EngineEvent> {
-  const { provider, model, system, sampling, contextTokens, turn, signal, tools, getContext, tryAppend, onDelta, finish } = opts;
+  const { provider, model, system, sampling, contextTokens, turn, signal, tools, getContext, tryAppend, onDelta, onUsage, finish } = opts;
   const specs = toolSpecs(tools.registry);
 
   let stop: Stop = "end";
@@ -83,7 +87,7 @@ export async function* runToolTurn(opts: RunToolTurnOpts): AsyncGenerator<Engine
     if (signal?.aborted) { stop = "interrupt"; break; }
 
     const roundResult = yield* streamRound(
-      provider, model, system, sampling, contextTokens, getContext(), specs, signal, turn, onDelta,
+      provider, model, system, sampling, contextTokens, getContext(), specs, signal, turn, onDelta, onUsage,
     );
 
     if (roundResult.stop === "error") {

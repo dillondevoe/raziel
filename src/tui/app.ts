@@ -108,7 +108,7 @@ export function createTuiApp(deps: TuiAppDeps): { surface: TuiSurface; ready: Pr
       const transcript = new Transcript(tui, () => tui.requestRender());
       const status = new Status(tui, () => tui.requestRender());
       status.setProfile(deps.profile, deps.provider.name);
-      status.setSession(deps.store.id);
+      status.setSession(deps.store.id, deps.store.replay());
 
       const write = (s: string) => systemLine(tui, s);
 
@@ -153,7 +153,7 @@ export function createTuiApp(deps: TuiAppDeps): { surface: TuiSurface; ready: Pr
         providerForFn: deps.providerForFn,
         write,
         onResumed: (info) => {
-          status.setSession(info.sessionId);
+          status.setSession(info.sessionId, storeBox.current.replay());
           status.setProfile(profileBox.current, info.providerName);
         },
       });
