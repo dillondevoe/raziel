@@ -28,7 +28,7 @@ test("astra profile carries the verified openai-compat shape", () => {
   expect(a.baseUrl).toBe("https://api.openai.com/v1");
   expect(a.maxToolSurface).toBe(0);
   expect(a.apiKeyEnv).toBe("RAZIEL_COMPAT_KEY");
-  expect(a.systemFile).toBe("~/jarvis-sync/saga-astra/INSTRUCTIONS.md");
+  expect(a.systemFile).toBe("~/.raziel/profiles/astra.md");
 });
 
 // Astra rejects temperature AND top_p. Both stay off the wire only because
@@ -103,8 +103,8 @@ test("a profile with no systemFile yields undefined and warns nothing", () => {
 
 test("a readable systemFile is loaded, ~-expanded against the given home", () => {
   const home = mkdtempSync(join(tmpdir(), "raziel-home-"));
-  mkdirSync(join(home, "jarvis-sync", "saga-astra"), { recursive: true });
-  writeFileSync(join(home, "jarvis-sync", "saga-astra", "INSTRUCTIONS.md"), "You are Astra.\n");
+  mkdirSync(join(home, ".raziel", "profiles"), { recursive: true });
+  writeFileSync(join(home, ".raziel", "profiles", "astra.md"), "You are Astra.\n");
   const warnings: string[] = [];
   const out = loadSystemPrompt(getProfile("astra")!, { home, warn: (m) => warnings.push(m) });
   expect(out).toBe("You are Astra.\n");
@@ -121,13 +121,13 @@ test("a declared-but-missing systemFile warns by path and degrades, never throws
   expect(out).toBeUndefined();
   expect(warnings.length).toBe(1);
   expect(warnings[0]).toContain("astra");
-  expect(warnings[0]).toContain(join(home, "jarvis-sync", "saga-astra", "INSTRUCTIONS.md"));
+  expect(warnings[0]).toContain(join(home, ".raziel", "profiles", "astra.md"));
 });
 
 test("an empty systemFile is treated as missing, and says so", () => {
   const home = mkdtempSync(join(tmpdir(), "raziel-home-"));
-  mkdirSync(join(home, "jarvis-sync", "saga-astra"), { recursive: true });
-  writeFileSync(join(home, "jarvis-sync", "saga-astra", "INSTRUCTIONS.md"), "   \n");
+  mkdirSync(join(home, ".raziel", "profiles"), { recursive: true });
+  writeFileSync(join(home, ".raziel", "profiles", "astra.md"), "   \n");
   const warnings: string[] = [];
   const out = loadSystemPrompt(getProfile("astra")!, { home, warn: (m) => warnings.push(m) });
   expect(out).toBeUndefined();
@@ -155,8 +155,8 @@ test("Engine passes system through to provider.stream (and omits it when unset)"
 // forgets to pass `system` fails here.
 test("/model astra builds an engine whose provider receives astra's persona", async () => {
   const home = mkdtempSync(join(tmpdir(), "raziel-home-"));
-  mkdirSync(join(home, "jarvis-sync", "saga-astra"), { recursive: true });
-  writeFileSync(join(home, "jarvis-sync", "saga-astra", "INSTRUCTIONS.md"), "ASTRA-PERSONA\n");
+  mkdirSync(join(home, ".raziel", "profiles"), { recursive: true });
+  writeFileSync(join(home, ".raziel", "profiles", "astra.md"), "ASTRA-PERSONA\n");
   const savedHome = process.env.HOME;
   process.env.HOME = home;
   try {
