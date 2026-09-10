@@ -1,6 +1,7 @@
 import { stream as openaiCompletionsStream } from "@earendil-works/pi-ai/api/openai-completions";
-import type { AssistantMessageEvent, Context, Message, Model, TextContent, Tool, ToolCall as PiToolCall, Usage } from "@earendil-works/pi-ai";
-import type { ChatMessage, Provider, StreamChunk, ToolSpec, TokenUsage } from "../provider";
+import type { AssistantMessageEvent, Context, Message, Model, TextContent, Tool, ToolCall as PiToolCall } from "@earendil-works/pi-ai";
+import type { ChatMessage, Provider, StreamChunk, ToolSpec } from "../provider";
+import { reportedUsage } from "./pi_usage";
 
 const PROVIDER_ID = "openai-compat";
 const DEFAULT_CONTEXT_WINDOW = 32_768;
@@ -11,21 +12,6 @@ const DEFAULT_MAX_TOKENS = 8192;
 // This placeholder keeps keyless endpoints working; a real apiKey always overrides it.
 const KEYLESS_API_KEY = "not-needed";
 
-// pi-ai 0.84.4: initial placeholder usage has NO reasoning property (:177),
-// whereas parseChunkUsage ALWAYS sets it (:1198), even for an all-zero report.
-// This distinguishes missing usage without re-parsing SSE or testing total > 0.
-// Optional zero breakdowns are ambiguous: the parser defaults missing fields to
-// zero. Omit those rather than claim they were reported. Recheck on upgrades.
-function reportedUsage(usage: Usage): TokenUsage | undefined {
-  if (usage.reasoning === undefined) return undefined;
-  return {
-    input_tokens: usage.input,
-    output_tokens: usage.output,
-    ...(usage.reasoning > 0 ? { reasoning_tokens: usage.reasoning } : {}),
-    ...(usage.cacheRead > 0 ? { cache_read_tokens: usage.cacheRead } : {}),
-    ...(usage.cacheWrite > 0 ? { cache_write_tokens: usage.cacheWrite } : {}),
-  };
-}
 
 // Exported so the RED/GREEN suite (and any future caller) can unit-test the
 // event-mapping layer directly against hand-built pi-ai AssistantMessageEvent objects,

@@ -1,6 +1,7 @@
 import { stream as openaiResponsesStream } from "@earendil-works/pi-ai/api/openai-responses";
 import type { AssistantMessageEvent, Context, Message, Model, TextContent, Tool, ToolCall as PiToolCall } from "@earendil-works/pi-ai";
 import type { ChatMessage, Provider, StreamChunk, ToolSpec } from "../provider";
+import { reportedUsage } from "./pi_usage";
 
 const PROVIDER_ID = "openai-responses";
 const DEFAULT_CONTEXT_WINDOW = 32_768;
@@ -215,6 +216,14 @@ export class OpenAIResponsesProvider implements Provider {
         if (!id || !name) throw new Error("openai-responses: tool call missing id or name");
         yield { type: "tool_call", id, name, args };
         continue;
+      }
+      if (ev.type === "done" || (ev.type === "error" && ev.reason !== "aborted")) {
+        // Usage first, and before the incomplete-tool-call throw below: the
+        // tokens were billed whether or not the rest of this stream is usable.
+        // Same ordering as openai_compat, for the same review finding.
+        const usage = reportedUsage(ev.type === "done" ? ev.message.usage : ev.error.usage);
+        if (usage) yield { type: "usage", usage };
+        if (opts.signal?.aborted) return;
       }
       if (ev.type === "done" && toolsOffered && toolArgs.size > 0) throw new Error("openai-responses: incomplete tool call");
       const r = mapEvent(ev);

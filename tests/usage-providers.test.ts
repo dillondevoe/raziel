@@ -1,6 +1,7 @@
 import { test, expect } from "bun:test";
 import { AnthropicProvider } from "../src/providers/anthropic";
 import { OpenAICompatProvider } from "../src/providers/openai_compat";
+import { OpenAIResponsesProvider } from "../src/providers/openai_responses";
 import { OllamaProvider } from "../src/providers/ollama";
 import type { Provider, StreamChunk } from "../src/provider";
 
@@ -75,6 +76,43 @@ test("compat reuses pi-ai's choice.usage and cache-hit fallback mapping", async 
   await compat({ prompt_tokens: 100, completion_tokens: 15, prompt_cache_hit_tokens: 30 }, async (provider) => {
     expect(await collect(provider)).toEqual([{ type: "usage", usage: { input_tokens: 70, output_tokens: 15, cache_read_tokens: 30 } }]);
   }, true);
+});
+
+// Responses wire: usage arrives ONCE, on the terminal response.completed event,
+// under OpenAI's `input_tokens` / `output_tokens` / `*_details` names. The
+// fixture emits real `event:` + `data:` frames because the adapter drives the
+// official SDK parser. `usage: undefined` omits the field from the terminal
+// response entirely -- the case where pi-ai's zero placeholder is all there is.
+async function responses(usage: object | null | undefined, check: (provider: Provider) => Promise<void>) {
+  const ev = (type: string, body: Record<string, unknown>) => `event: ${type}\ndata: ${JSON.stringify({ type, ...body })}\n\n`;
+  const server = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch() {
+    const base = { id: "resp-1", object: "response", model: "fixture-model", output: [] };
+    const body =
+      ev("response.created", { response: { ...base, status: "in_progress" } }) +
+      ev("response.output_text.delta", { item_id: "msg-1", output_index: 0, content_index: 0, delta: "reply" }) +
+      ev("response.completed", { response: { ...base, status: "completed", ...(usage === undefined ? {} : { usage }) } });
+    return new Response(body, { headers: { "content-type": "text/event-stream" } });
+  } });
+  try { await check(new OpenAIResponsesProvider({ baseUrl: `http://127.0.0.1:${server.port}/v1`, apiKey: "fixture-key" })); }
+  finally { server.stop(true); }
+}
+
+test("responses uses pi-ai's parsed terminal usage, excluding cache from input and keeping reasoning inside output", async () => {
+  await responses({ input_tokens: 100, output_tokens: 15, total_tokens: 115, input_tokens_details: { cached_tokens: 20 }, output_tokens_details: { reasoning_tokens: 4 } }, async (provider) => {
+    expect(await collect(provider)).toEqual([{ type: "usage", usage: { input_tokens: 80, output_tokens: 15, reasoning_tokens: 4, cache_read_tokens: 20 } }]);
+  });
+});
+
+for (const usage of [undefined, null]) {
+  test(`responses missing usage (${usage}) must not turn pi-ai's zero placeholder into a measurement`, async () => {
+    await responses(usage, async (provider) => { expect(await collect(provider)).toEqual([]); });
+  });
+}
+
+test("responses reports an explicit all-zero total, without inventing optional zero breakdowns", async () => {
+  await responses({ input_tokens: 0, output_tokens: 0, total_tokens: 0 }, async (provider) => {
+    expect(await collect(provider)).toEqual([{ type: "usage", usage: { input_tokens: 0, output_tokens: 0 } }]);
+  });
 });
 
 function ollama(final: object, newline = true) {
