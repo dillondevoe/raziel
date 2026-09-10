@@ -27,11 +27,15 @@ export type ModelProfile = {
 };
 
 // qwen numbers are the landscape-scan doctrine: 32K forced context, small
-// tool surface, 0.7/0.8 sampling, never greedy.
+// tool surface, 0.7/0.8 sampling, never greedy. The MODEL is measured, not
+// scanned: 120-trial pre-registered tool-call benchmark, 2026-09-10 —
+// qwen2.5:7b was 20/20 on both the native and prompted paths and ~12x faster
+// than the 27b; both larger models dropped a call. (Wilson-95 floor: only
+// 20/20 passes at n=20, so the pick is "perfect and fastest", not "best".)
 const REGISTRY: ModelProfile[] = [
   { id: "sonnet", provider: "anthropic", model: "claude-sonnet-5",
     contextTokens: 200_000, maxToolSurface: 24, parser: "native", streamingTools: true },
-  { id: "qwen", provider: "ollama", model: "qwen3.5:9b",
+  { id: "qwen", provider: "ollama", model: "qwen2.5:7b",
     baseUrl: "http://127.0.0.1:11434", contextTokens: 32_768, maxToolSurface: 6,
     parser: "native", sampling: { temperature: 0.7, topP: 0.8 }, streamingTools: false,
     escalateTo: "sonnet" },
