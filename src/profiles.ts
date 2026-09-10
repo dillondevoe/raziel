@@ -2,7 +2,7 @@ export type ParserKind = "native"; // M1b adds "hermes-json" | "qwen-xml"
 
 export type ModelProfile = {
   id: string; // registry key AND what /model matches
-  provider: "anthropic" | "ollama" | "openai-compat";
+  provider: "anthropic" | "ollama" | "openai-compat" | "openai-responses";
   model: string; // provider-side model name
   baseUrl?: string; // ollama / openai-compat endpoints
   contextTokens: number; // budget the engine may assume
