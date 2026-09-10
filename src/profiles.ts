@@ -57,7 +57,15 @@ const REGISTRY: ModelProfile[] = [
     baseUrl: "https://api.openai.com/v1", contextTokens: 32_768, maxToolSurface: 0,
     parser: "native", streamingTools: false,
     apiKeyEnv: "RAZIEL_COMPAT_KEY",
-    systemFile: "~/jarvis-sync/saga-astra/INSTRUCTIONS.md" },
+    systemFile: "~/.raziel/profiles/astra.md" },   // operator-supplied persona; lives in raziel's own state dir
+  // NO tool-bearing astra profile over openai-compat, and this is MEASURED, not
+  // inferred (2026-09-10, live against api.openai.com): with `tools` present
+  // Chat Completions returns 400 "Function tools with reasoning_effort are not
+  // supported for gpt-6-astra ... use /v1/responses or set reasoning_effort to
+  // 'none'", and sending 'none' returns 400 "does not support 'none'". The two
+  // errors close the door from both sides. The provider's tool channel below is
+  // real and tested; it is for OTHER openai-compatible endpoints. Astra's hands
+  // arrive with a Responses-API provider, as a separate profile, when that lands.
 ];
 // Freeze every entry (+ its sampling sub-object) and the registry array
 // itself, so callers can't mutate the registry's live objects out from
