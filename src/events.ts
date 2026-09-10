@@ -1,10 +1,12 @@
 import type { RiskClass, Provenance } from "./tools/types";
+import type { TokenUsage } from "./provider";
 
 type Base = { id: string; ts: string };
 
 export type SessionEvent = Base & (
   | { type: "user_message"; text: string }
   | { type: "assistant_message"; turn: string; text: string }
+  | ({ type: "usage"; turn: string; provider: string; model: string } & TokenUsage)
   | { type: "turn_end"; turn: string; stop: "end" | "interrupt" | "error" }
   | { type: "error"; turn?: string; message: string }
   | { type: "tool_request"; turn: string; tool: string; args: unknown; requestId: string; provenance: Provenance; argsHash: string }
@@ -36,12 +38,15 @@ type FieldCheck = (v: unknown) => boolean;
 const str: FieldCheck = (v) => typeof v === "string";
 const optStr: FieldCheck = (v) => v === undefined || typeof v === "string";
 const bool: FieldCheck = (v) => typeof v === "boolean";
+const tokens: FieldCheck = (v) => typeof v === "number" && Number.isSafeInteger(v) && v >= 0;
+const optTokens: FieldCheck = (v) => v === undefined || tokens(v);
 const anyVal: FieldCheck = () => true; // `args: unknown` — no primitive shape to enforce
 const oneOf = (...allowed: string[]): FieldCheck => (v) => typeof v === "string" && allowed.includes(v);
 
 const FIELD_CHECKS: { [T in SessionEvent["type"]]: Record<string, FieldCheck> } = {
   user_message: { text: str },
   assistant_message: { turn: str, text: str },
+  usage: { turn: str, provider: str, model: str, input_tokens: tokens, output_tokens: tokens, reasoning_tokens: optTokens, cache_read_tokens: optTokens, cache_write_tokens: optTokens },
   turn_end: { turn: str, stop: oneOf("end", "interrupt", "error") },
   error: { turn: optStr, message: str },
   tool_request: { turn: str, tool: str, args: anyVal, requestId: str, provenance: oneOf("provider_structured"), argsHash: str },

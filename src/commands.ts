@@ -25,7 +25,10 @@ export function providerFor(p: ModelProfile, fetchImpl?: typeof fetch): Provider
       return new AnthropicProvider();
     }
     case "ollama":
-      return new OllamaProvider({ baseUrl: p.baseUrl, fetchImpl });
+      // RAZIEL_OLLAMA_URL: the ollama an operator actually has may live on another box (a GPU
+      // host on the LAN or a tailnet). The profile keeps the local default; the env var is the
+      // one place a host name ever appears, and it never appears in this repo.
+      return new OllamaProvider({ baseUrl: process.env.RAZIEL_OLLAMA_URL ?? p.baseUrl, fetchImpl });
     case "openai-compat": {
       if (!p.baseUrl) throw new Error(`profile ${p.id} missing baseUrl`);
       // A profile that names an apiKeyEnv is declaring it needs a key. Refuse

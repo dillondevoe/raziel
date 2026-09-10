@@ -1,5 +1,5 @@
 import { mkEvent, type EngineEvent, type SessionEvent } from "./events";
-import type { ChatMessage, Provider } from "./provider";
+import type { ChatMessage, Provider, TokenUsage } from "./provider";
 import type { SessionStore } from "./session";
 import type { ModelProfile } from "./profiles";
 import { runToolTurn, type ToolDeps } from "./engine_tools";
@@ -70,6 +70,13 @@ export class Engine {
     let acc = "";
     let interrupted = false;
     let sawDone = false;
+    let sawUsage = false;
+
+    const recordUsage = (usage: TokenUsage) => {
+      const e = mkEvent("usage", { ...usage, turn, provider: provider.name, model });
+      store.append(e);
+      return e;
+    };
 
     // Each event is yielded the moment ITS append succeeds, so a store failure on the second
     // append never hides a first that already persisted (review, PR #1: assistant_message
@@ -99,6 +106,7 @@ export class Engine {
           // A missing audit record stops the turn before further tool work.
           tryAppend: appendAudit,
           onDelta: (t) => { acc += t; },
+          onUsage: recordUsage,
           finish,
         });
         return;
@@ -107,6 +115,7 @@ export class Engine {
       for await (const chunk of provider.stream({ model, system, messages: this.context(), signal: o?.signal, sampling, contextTokens })) {
         if (chunk.type === "done") { sawDone = true; continue; }   // a delivered done is always recorded
         if (o?.signal?.aborted) { interrupted = true; break; }
+        if (chunk.type === "usage" && !sawUsage) { sawUsage = true; yield recordUsage(chunk.usage); }
         if (chunk.type === "delta") { acc += chunk.text; yield { type: "assistant_delta", turn, text: chunk.text }; }
       }
       const stop = interrupted || (o?.signal?.aborted && !sawDone) ? "interrupt" : "end";

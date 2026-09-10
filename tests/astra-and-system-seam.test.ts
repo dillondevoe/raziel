@@ -177,3 +177,19 @@ test("/model astra builds an engine whose provider receives astra's persona", as
     if (savedRazielHome === undefined) delete process.env.RAZIEL_HOME; else process.env.RAZIEL_HOME = savedRazielHome;
   }
 });
+
+// RAZIEL_OLLAMA_URL: the operator's ollama may live on another host. The env var wins over
+// the profile's baseUrl for ollama profiles only; unset, the profile's own URL is used.
+test("RAZIEL_OLLAMA_URL overrides an ollama profile's baseUrl, and only that", () => {
+  const saved = process.env.RAZIEL_OLLAMA_URL;
+  try {
+    process.env.RAZIEL_OLLAMA_URL = "http://gpu.example:11434";
+    const p = providerFor(getProfile("qwen")!) as unknown as { baseUrl: string };
+    expect(p.baseUrl).toBe("http://gpu.example:11434");
+    delete process.env.RAZIEL_OLLAMA_URL;
+    const q = providerFor(getProfile("qwen")!) as unknown as { baseUrl: string };
+    expect(q.baseUrl).toBe("http://127.0.0.1:11434");
+  } finally {
+    if (saved === undefined) delete process.env.RAZIEL_OLLAMA_URL; else process.env.RAZIEL_OLLAMA_URL = saved;
+  }
+});

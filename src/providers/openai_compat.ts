@@ -1,6 +1,6 @@
 import { stream as openaiCompletionsStream } from "@earendil-works/pi-ai/api/openai-completions";
-import type { AssistantMessageEvent, Context, Message, Model, Tool } from "@earendil-works/pi-ai";
-import type { ChatMessage, Provider, StreamChunk, ToolSpec } from "../provider";
+import type { AssistantMessageEvent, Context, Message, Model, Tool, Usage } from "@earendil-works/pi-ai";
+import type { ChatMessage, Provider, StreamChunk, ToolSpec, TokenUsage } from "../provider";
 
 const PROVIDER_ID = "openai-compat";
 const DEFAULT_CONTEXT_WINDOW = 32_768;
@@ -10,6 +10,22 @@ const DEFAULT_MAX_TOKENS = 8192;
 // openai-completions.js) — even for keyless local servers (Ollama/vLLM/LM Studio).
 // This placeholder keeps keyless endpoints working; a real apiKey always overrides it.
 const KEYLESS_API_KEY = "not-needed";
+
+// pi-ai 0.84.4: initial placeholder usage has NO reasoning property (:177),
+// whereas parseChunkUsage ALWAYS sets it (:1198), even for an all-zero report.
+// This distinguishes missing usage without re-parsing SSE or testing total > 0.
+// Optional zero breakdowns are ambiguous: the parser defaults missing fields to
+// zero. Omit those rather than claim they were reported. Recheck on upgrades.
+function reportedUsage(usage: Usage): TokenUsage | undefined {
+  if (usage.reasoning === undefined) return undefined;
+  return {
+    input_tokens: usage.input,
+    output_tokens: usage.output,
+    ...(usage.reasoning > 0 ? { reasoning_tokens: usage.reasoning } : {}),
+    ...(usage.cacheRead > 0 ? { cache_read_tokens: usage.cacheRead } : {}),
+    ...(usage.cacheWrite > 0 ? { cache_write_tokens: usage.cacheWrite } : {}),
+  };
+}
 
 // Exported so the RED/GREEN suite (and any future caller) can unit-test the
 // event-mapping layer directly against hand-built pi-ai AssistantMessageEvent objects,
@@ -106,6 +122,7 @@ export class OpenAICompatProvider implements Provider {
     const samplingParams: Record<string, unknown> = {};
     if (opts.sampling?.topP !== undefined) samplingParams.top_p = opts.sampling.topP;
 
+    // pi-ai already requests stream_options.include_usage by default (:594).
     const events = openaiCompletionsStream(model, context, {
       apiKey: this.apiKey ?? KEYLESS_API_KEY,
       signal: opts.signal,
@@ -155,6 +172,13 @@ export class OpenAICompatProvider implements Provider {
         if (!id || !name) throw new Error("openai-compat: tool call missing id or name");
         yield { type: "tool_call", id, name, args };
         continue;
+      }
+      if (ev.type === "done" || (ev.type === "error" && ev.reason !== "aborted")) {
+        // Usage first: it was billed whether or not the rest of this stream is usable
+        // (review: the incomplete-tool-call throw sat above this and dropped parsed usage).
+        const usage = reportedUsage(ev.type === "done" ? ev.message.usage : ev.error.usage);
+        if (usage) yield { type: "usage", usage };
+        if (opts.signal?.aborted) return;
       }
       if (ev.type === "done" && toolsOffered && toolArgs.size > 0) throw new Error("openai-compat: incomplete tool call");
       const r = mapEvent(ev);

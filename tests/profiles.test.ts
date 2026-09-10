@@ -20,7 +20,7 @@ test("getProfile returns the qwen profile with expected fields", () => {
   expect(qwen).toBeDefined();
   expect(qwen!.id).toBe("qwen");
   expect(qwen!.provider).toBe("ollama");
-  expect(qwen!.model).toBe("qwen3.5:9b");
+  expect(qwen!.model).toBe("qwen2.5:7b");
   expect(qwen!.baseUrl).toBe("http://127.0.0.1:11434");
   expect(qwen!.contextTokens).toBe(32_768);
   expect(qwen!.maxToolSurface).toBe(6);
