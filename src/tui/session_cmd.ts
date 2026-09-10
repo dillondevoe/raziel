@@ -3,6 +3,7 @@ import { stripTerminalSequences } from "@earendil-works/pi-tui";
 import { Engine } from "../engine";
 import { SessionStore } from "../session";
 import type { ModelProfile } from "../profiles";
+import { loadSystemPrompt } from "../system_prompt";
 import type { ToolDeps } from "../engine_tool_call";
 import { sliceTools } from "../tools/registry";
 import { providerFor } from "../commands";
@@ -101,7 +102,7 @@ export function createSessionCommand(deps: SessionCommandDeps): (line: string) =
             approvals: deps.tools.approvals,
           }
         : undefined;
-      engine = new Engine({ provider, store, profile: deps.profileBox.current, tools });
+      engine = new Engine({ provider, store, profile: deps.profileBox.current, system: loadSystemPrompt(deps.profileBox.current), tools });
     } catch (err) {
       // Same UX as an unknown profile / missing-key provider error elsewhere:
       // one-line error, no swap, no crash.
