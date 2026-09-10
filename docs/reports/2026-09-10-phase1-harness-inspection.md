@@ -1,5 +1,23 @@
 # Phase 1: Raziel harness inspection and repair
 
+> **Addendum at merge (2026-09-10, operator review of PR #1).** Two things in this report were true
+> when written and are not true on `main`:
+> 1. The `astra-agent` profile this report adds (§1 map row "OpenAI-compatible native tools",
+>    §2 patch 3, the `--profile astra-agent` and smoke-probe instructions) was **removed before
+>    merge**. A live probe showed gpt-6-astra returns 400 on `/v1/chat/completions` whenever
+>    `tools` is present, and 400 again on `reasoning_effort: 'none'`. The provider's tool channel
+>    itself shipped and is real for other OpenAI-compatible endpoints; its tests now use a local
+>    fixture profile and assert the registry carries none for Astra. Astra's hands need a
+>    Responses-API provider. The reason is recorded at the registry in `src/profiles.ts`.
+> 2. The hard-fail persistence change (§2 patch 2) shipped with four ordering fixes found in
+>    review: `finish` yields each event after its own append; error-class events keep the
+>    best-effort append so a store failure never replaces a provider diagnostic; a tool result
+>    is yielded before its append; and an `always` approval writes its standing rule only after
+>    the decision event is durable. Arms in `tests/engine-persistence.test.ts`.
+> Also: the persona file path moved to `profiles/astra.md` under `RAZIEL_HOME`, and directory grep
+> now skips unreadable files with a count instead of aborting.
+
+
 Inspected 2026-09-10. Base: `c69377f`. Working branch: `saga/phase1-harness`, already created by the launcher. Changes are uncommitted for review. I did not switch branches, commit, push, or modify main.
 
 ## 1. The four things that actually matter

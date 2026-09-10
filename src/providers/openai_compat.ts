@@ -120,12 +120,17 @@ export class OpenAICompatProvider implements Provider {
     // pi-ai finalizes arguments with a lenient streaming parser. R13/R17 require
     // parsing the complete raw deltas strictly, not trusting recovered arguments.
     const toolArgs = new Map<number, string>();
+    // Tool events are only meaningful when the caller offered tools. A text-only turn that
+    // carries a stray tool_call (some endpoints do) must not lose its text to a strict-parse
+    // throw (review, PR #1).
+    const toolsOffered = (opts.tools?.length ?? 0) > 0;
     for await (const ev of events) {
       // pi-ai's stream() only checks the abort signal after its own network
       // loop drains — an already-buffered text_delta/done (parsed from the
       // same read as an earlier delta) still arrives here after abort()
       // fires. Guard every iteration, mirroring the ollama provider.
       if (opts.signal?.aborted) return;
+      if (!toolsOffered && (ev.type === "toolcall_start" || ev.type === "toolcall_delta" || ev.type === "toolcall_end")) continue;
       if (ev.type === "toolcall_start") {
         toolArgs.set(ev.contentIndex, "");
         continue;
@@ -142,7 +147,7 @@ export class OpenAICompatProvider implements Provider {
         let args: unknown;
         try {
           if (raw === undefined) throw new Error("missing start");
-          args = JSON.parse(raw);
+          args = raw.trim() === "" ? {} : JSON.parse(raw);   // zero-arg call: same as the anthropic provider
         } catch {
           throw new Error("openai-compat: invalid tool JSON");
         }
@@ -151,7 +156,7 @@ export class OpenAICompatProvider implements Provider {
         yield { type: "tool_call", id, name, args };
         continue;
       }
-      if (ev.type === "done" && toolArgs.size > 0) throw new Error("openai-compat: incomplete tool call");
+      if (ev.type === "done" && toolsOffered && toolArgs.size > 0) throw new Error("openai-compat: incomplete tool call");
       const r = mapEvent(ev);
       if (r.kind === "skip") continue;
       if (r.kind === "throw") throw r.error;

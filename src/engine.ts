@@ -71,19 +71,24 @@ export class Engine {
     let interrupted = false;
     let sawDone = false;
 
-    const finish = (stop: "end" | "interrupt" | "error"): EngineEvent[] => {
-      const out: EngineEvent[] = [];
+    // Each event is yielded the moment ITS append succeeds, so a store failure on the second
+    // append never hides a first that already persisted (review, PR #1: assistant_message
+    // durable but never yielded, and no turn_end for the Book to flush on).
+    const finish = function* (stop: "end" | "interrupt" | "error"): Generator<EngineEvent> {
       // Persist assistant_message only for "end" or "interrupt" with text
       if (stop === "end" || (stop === "interrupt" && acc.length > 0)) {
         const msg = mkEvent("assistant_message", { turn, text: acc });
         store.append(msg);
-        out.push(msg);
+        yield msg;
       }
       const end = mkEvent("turn_end", { turn, stop });
       store.append(end);
-      out.push(end);
-      return out;
+      yield end;
     };
+    // Audit records (assistant_message, turn_end, tool_request/result, approval_*) hard-fail
+    // into the error boundary. Error-class events stay best-effort: a store failure must not
+    // REPLACE the provider's own diagnostic with the store's (review, PR #1).
+    const appendAudit = (e: SessionEvent) => { if (e.type === "error") this.tryAppend(e); else store.append(e); };
 
     try {
       if (tools) {
@@ -92,7 +97,7 @@ export class Engine {
           signal: o?.signal,
           getContext: () => this.context(),
           // A missing audit record stops the turn before further tool work.
-          tryAppend: (e) => store.append(e),
+          tryAppend: appendAudit,
           onDelta: (t) => { acc += t; },
           finish,
         });

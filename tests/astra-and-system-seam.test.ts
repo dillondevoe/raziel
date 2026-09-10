@@ -28,7 +28,7 @@ test("astra profile carries the verified openai-compat shape", () => {
   expect(a.baseUrl).toBe("https://api.openai.com/v1");
   expect(a.maxToolSurface).toBe(0);
   expect(a.apiKeyEnv).toBe("RAZIEL_COMPAT_KEY");
-  expect(a.systemFile).toBe("~/.raziel/profiles/astra.md");
+  expect(a.systemFile).toBe("profiles/astra.md");
 });
 
 // Astra rejects temperature AND top_p. Both stay off the wire only because
@@ -158,7 +158,9 @@ test("/model astra builds an engine whose provider receives astra's persona", as
   mkdirSync(join(home, ".raziel", "profiles"), { recursive: true });
   writeFileSync(join(home, ".raziel", "profiles", "astra.md"), "ASTRA-PERSONA\n");
   const savedHome = process.env.HOME;
+  const savedRazielHome = process.env.RAZIEL_HOME;
   process.env.HOME = home;
+  process.env.RAZIEL_HOME = join(home, ".raziel");   // a relative systemFile resolves against the STATE dir
   try {
     const fake = new FakeProvider([["ok"]]);
     const store = new SessionStore("s3");
@@ -172,5 +174,6 @@ test("/model astra builds an engine whose provider receives astra's persona", as
     expect(fake.optsLog[0]!.system).toBe("ASTRA-PERSONA\n");
   } finally {
     if (savedHome === undefined) delete process.env.HOME; else process.env.HOME = savedHome;
+    if (savedRazielHome === undefined) delete process.env.RAZIEL_HOME; else process.env.RAZIEL_HOME = savedRazielHome;
   }
 });

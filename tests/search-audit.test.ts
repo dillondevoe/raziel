@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, symlinkSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, symlinkSync, chmodSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { grepTool } from "../src/tools/search";
@@ -48,5 +48,19 @@ test("grep keeps small searches clean and refuses directory symlink escape", asy
       expect(result.ok).toBe(false);
       expect(result.output).toContain("escapes workspace");
     });
+  });
+});
+
+test("grep skips an unreadable file and keeps every other match, saying how many it skipped", async () => {
+  await fixture(async (ws) => {
+    writeFileSync(join(ws.root, "a.txt"), "marker\n");
+    writeFileSync(join(ws.root, "b.txt"), "marker\n");
+    chmodSync(join(ws.root, "b.txt"), 0o000);
+    try {
+      const result = await grepTool.run({ pattern: "marker" }, ws);
+      expect(result.ok).toBe(true);
+      expect(result.output).toContain("a.txt:1:marker");
+      expect(result.output).toContain("1 file(s) unreadable, skipped");
+    } finally { chmodSync(join(ws.root, "b.txt"), 0o644); }
   });
 });

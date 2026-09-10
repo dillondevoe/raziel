@@ -57,7 +57,7 @@ const REGISTRY: ModelProfile[] = [
     baseUrl: "https://api.openai.com/v1", contextTokens: 32_768, maxToolSurface: 0,
     parser: "native", streamingTools: false,
     apiKeyEnv: "RAZIEL_COMPAT_KEY",
-    systemFile: "~/.raziel/profiles/astra.md" },   // operator-supplied persona; lives in raziel's own state dir
+    systemFile: "profiles/astra.md" },   // relative = under RAZIEL_HOME (~/.raziel); operator-supplied persona
   // NO tool-bearing astra profile over openai-compat, and this is MEASURED, not
   // inferred (2026-09-10, live against api.openai.com): with `tools` present
   // Chat Completions returns 400 "Function tools with reasoning_effort are not

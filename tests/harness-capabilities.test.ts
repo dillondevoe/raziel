@@ -77,7 +77,7 @@ test("plain CLI (fake model) starts and its result is collected by book (fake mo
   const root = mkdtempSync(join(tmpdir(), "raziel-cli-probe-"));
   try {
     const env = { ...scrubEnv(process.env), RAZIEL_HOME: root, RAZIEL_FAKE: "1", RAZIEL_PLAIN: "1" };
-    const proc = Bun.spawn([process.execPath, "run", "src/cli.ts", "--profile", "astra", "--session", "cli-probe"], {
+    const proc = Bun.spawn([process.execPath, "run", "src/cli.ts", "--profile", "sonnet", "--session", "cli-probe"], {
       cwd: checkout, env, stdin: "pipe", stdout: "pipe", stderr: "pipe",
     });
     proc.stdin.write("hello\n/quit\n");

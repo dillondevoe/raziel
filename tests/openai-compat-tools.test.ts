@@ -58,7 +58,26 @@ test("openai-compat advertises schemas and emits complete interleaved calls exac
   expect(body.max_completion_tokens ?? body.max_tokens).toBe(8192);
 });
 
-for (const raw of ['{"path":"a.txt"', '{"path":}', ""]) {
+test("openai-compat treats empty arguments as a zero-arg call ({}), like the anthropic provider", async () => {
+  await fixture(() => reply(chunk({ tool_calls: [call(0, "", "read_file")] }) + chunk({}, "tool_calls")), async (p) => {
+    const calls: StreamChunk[] = [];
+    for await (const c of p.stream({ model: "test", messages: [], tools: [readSpec] })) {
+      if (c.type === "tool_call") calls.push(c);
+    }
+    expect(calls).toEqual([{ type: "tool_call", id: "call-0", name: "read_file", args: {} }]);
+  });
+});
+
+test("openai-compat ignores stray tool events when the caller offered no tools, keeping the text", async () => {
+  await fixture(() => reply(chunk({ content: "The answer is 42." }) + chunk({ tool_calls: [call(0, "", "list")] }) + chunk({}, "stop")), async (p) => {
+    const seen: StreamChunk[] = [];
+    for await (const c of p.stream({ model: "test", messages: [] })) seen.push(c);
+    expect(seen.filter((c) => c.type === "tool_call")).toEqual([]);
+    expect(seen.find((c) => c.type === "delta")).toEqual({ type: "delta", text: "The answer is 42." });
+  });
+});
+
+for (const raw of ['{"path":"a.txt"', '{"path":}']) {
   test(`openai-compat refuses incomplete tool JSON ${JSON.stringify(raw)}`, async () => {
     await fixture(() => reply(chunk({ tool_calls: [call(0, raw, "read_file")] }) + chunk({}, "tool_calls")), async (p) => {
       const calls: StreamChunk[] = [];

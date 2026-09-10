@@ -67,8 +67,13 @@ export const grepTool: BuiltinTool = {
         : [path];
 
       const matches: string[] = [];
+      let unreadable = 0;
       for (const file of files.slice(0, MAX_WALK_FILES)) {
-        const text = await Bun.file(ws.contain(file)).text();
+        // walkFiles already yields real paths under a contained root; an unreadable file
+        // (mode 000, deleted between readdir and read) is counted, not fatal — one bad file
+        // must not discard every match already found (review, PR #1).
+        let text: string;
+        try { text = await Bun.file(file).text(); } catch { unreadable++; continue; }
         const lines = text.split("\n");
         for (let i = 0; i < lines.length; i++) {
           if (re.test(lines[i]!)) {
@@ -79,6 +84,7 @@ export const grepTool: BuiltinTool = {
       if (files.length > MAX_WALK_FILES) {
         matches.push(`[truncated: searched ${MAX_WALK_FILES} files; narrow path]`);
       }
+      if (unreadable > 0) matches.push(`[${unreadable} file(s) unreadable, skipped]`);
       return { ok: true, output: matches.join("\n") };
     } catch (e) {
       return { ok: false, output: errMessage(e) };
