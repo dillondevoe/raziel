@@ -69,7 +69,17 @@ const REGISTRY: ModelProfile[] = [
   // 'none'", and sending 'none' returns 400 "does not support 'none'". The two
   // errors close the door from both sides. The provider's tool channel below is
   // real and tested; it is for OTHER openai-compatible endpoints. Astra's hands
-  // arrive with a Responses-API provider, as a separate profile, when that lands.
+  // arrive with a Responses-API provider, as a separate profile, which is the
+  // entry directly below.
+  //
+  // maxToolSurface: 7 is not a placeholder. Lane (b)'s door was proven by a LIVE
+  // arm the operator ran on 2026-09-10 (PR #4): astra executed read_file on
+  // package.json through Responses and the content came back. The addendum's
+  // rule -- a profile advertising a capability with no working path is a defect --
+  // is satisfied by that run, and by nothing weaker.
+  { id: "astra-agent", provider: "openai-responses", model: "gpt-6-astra",
+    baseUrl: "https://api.openai.com/v1", contextTokens: 32_768, maxToolSurface: 7,
+    parser: "native", streamingTools: true, apiKeyEnv: "RAZIEL_COMPAT_KEY" },
 ];
 // Freeze every entry (+ its sampling sub-object) and the registry array
 // itself, so callers can't mutate the registry's live objects out from

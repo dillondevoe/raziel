@@ -189,6 +189,17 @@ test("providerFor builds the responses provider, and refuses a keyed profile who
   }
 });
 
-test("the registry advertises no openai-responses profile until a live tool arm exists", () => {
-  expect(listProfiles().filter((p) => p.provider === "openai-responses")).toEqual([]);
+// This arm used to assert the registry advertised NOTHING over openai-responses,
+// because the rule is that a profile claiming a capability with no working path
+// is a defect. That condition is now MET rather than waived: the operator ran a
+// live arm on 2026-09-10 (PR #4) in which astra executed read_file through the
+// Responses door and the content came back. So the arm inverts -- it now pins
+// the shape of the profile that run earned, and would fail if someone added a
+// second, unproven openai-responses entry beside it.
+test("the registry advertises exactly the one openai-responses profile a live tool arm earned", () => {
+  const entries = listProfiles().filter((p) => p.provider === "openai-responses");
+  expect(entries.map((p) => p.id)).toEqual(["astra-agent"]);
+  expect(entries[0]).toMatchObject({
+    model: "gpt-6-astra", maxToolSurface: 7, streamingTools: true, apiKeyEnv: "RAZIEL_COMPAT_KEY",
+  });
 });

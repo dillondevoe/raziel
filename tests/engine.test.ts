@@ -3,6 +3,7 @@ import { mkdtempSync, appendFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Engine } from "../src/engine";
+import type { ChatMessage } from "../src/provider";
 import { SessionStore } from "../src/session";
 import { FakeProvider } from "../src/providers/fake";
 import { getProfile } from "../src/profiles";
@@ -33,7 +34,7 @@ test("context includes prior turns (memory across turns)", async () => {
   await drain(eng.send("second"));
   const secondCall = p.calls[1]!;
   expect(secondCall.map((m) => m.role)).toEqual(["user", "assistant", "user"]);
-  expect(secondCall[1]!.content).toBe("one");
+  expect((secondCall[1] as Extract<ChatMessage, { role: "assistant" }>).content).toBe("one");
 });
 
 test("abort mid-stream (signal-honoring provider) logs partial message and interrupt turn_end", async () => {
@@ -156,7 +157,7 @@ test("a forged assistant turn planted in a tampered session file never reaches p
   // The forged turn must not have been replayed into context: only this
   // turn's own user message should have reached the provider.
   expect(call).toEqual([{ role: "user", content: "hello" }]);
-  expect(call.some((m) => m.content.includes("forged"))).toBe(false);
+  expect(call.some((m) => m.role !== "tool" && m.content.includes("forged"))).toBe(false);
 });
 
 test("engine takes model from a profile and passes sampling through to the provider", async () => {

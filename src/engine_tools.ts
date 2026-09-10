@@ -102,9 +102,14 @@ export async function* runToolTurn(opts: RunToolTurnOpts): AsyncGenerator<Engine
 
     if (roundResult.toolCalls.length === 0) { stop = "end"; break; }
 
+    // `round` is passed down and PERSISTED on every tool_request/tool_result.
+    // Without it a replay cannot tell one round of two parallel calls from two
+    // rounds of one call each, and reconstructing the wrong one hands the model
+    // a false transcript of its own behaviour -- the same class of defect as
+    // replaying no assistant turn at all.
     for (const call of roundResult.toolCalls) {
       if (signal?.aborted) { stop = "interrupt"; break; }
-      const { aborted } = yield* handleToolCall(call, turn, tools, tryAppend, signal);
+      const { aborted } = yield* handleToolCall(call, turn, tools, tryAppend, signal, round);
       if (aborted) { stop = "interrupt"; break; }
     }
     if (stop === "interrupt") break;

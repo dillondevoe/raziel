@@ -1,4 +1,5 @@
 import { test, expect } from "bun:test";
+import type { ChatMessage } from "../src/provider";
 import { FakeProvider } from "../src/providers/fake";
 
 test("fake provider yields scripted deltas then done, and records calls", async () => {
@@ -9,7 +10,7 @@ test("fake provider yields scripted deltas then done, and records calls", async 
     else if (c.type === "done") expect(c.stopReason).toBe("end");
   }
   expect(chunks.join("")).toBe("Hello");
-  expect(p.calls[0]?.[0]?.content).toBe("hi");
+  expect((p.calls[0]?.[0] as Extract<ChatMessage, { role: "user" }>).content).toBe("hi");
 });
 
 test("fake provider stops on abort", async () => {

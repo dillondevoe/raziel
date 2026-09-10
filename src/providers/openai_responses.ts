@@ -1,5 +1,5 @@
 import { stream as openaiResponsesStream } from "@earendil-works/pi-ai/api/openai-responses";
-import type { AssistantMessageEvent, Context, Message, Model, Tool } from "@earendil-works/pi-ai";
+import type { AssistantMessageEvent, Context, Message, Model, TextContent, Tool, ToolCall as PiToolCall } from "@earendil-works/pi-ai";
 import type { ChatMessage, Provider, StreamChunk, ToolSpec } from "../provider";
 
 const PROVIDER_ID = "openai-responses";
@@ -36,13 +36,9 @@ export function mapEvent(ev: AssistantMessageEvent): MapResult {
   }
 }
 
-function toPiMessage(m: ChatMessage, model: string): Message {
-  if (m.role === "user") {
-    return { role: "user", content: m.content, timestamp: Date.now() };
-  }
+function assistantEnvelope(model: string): Omit<Message & { role: "assistant" }, "content"> {
   return {
     role: "assistant",
-    content: [{ type: "text", text: m.content }],
     api: "openai-responses",
     provider: PROVIDER_ID,
     model,
@@ -57,6 +53,47 @@ function toPiMessage(m: ChatMessage, model: string): Message {
     stopReason: "stop",
     timestamp: Date.now(),
   };
+}
+
+/** ChatMessage[] -> pi-ai Message[], which the Responses adapter renders as
+ * `function_call` / `function_call_output` items.
+ *
+ * One shape difference from anthropic, and it is the reason this is not a
+ * copy of that mapper: pi-ai models a tool result as its OWN top-level message
+ * (`role: "toolResult"`, one per call, carrying `toolCallId`), not as blocks
+ * batched into the next user message. So one `role: "tool"` ChatMessage
+ * EXPANDS to N pi-ai messages -- hence a mapper returning an array per input
+ * rather than one message per input. The join is `toolCallId`, matched against
+ * the `id` on the assistant message's toolCall block; on the Responses wire
+ * that becomes `call_id`, which the adapter derives from this id, while the
+ * item's own `id` is the server's and is not ours to invent.
+ *
+ * `arguments` is typed `Record<string, any>` by pi-ai but our `args` is
+ * `unknown` (it is whatever the model emitted and was strictly parsed). A
+ * non-object would be a provider bug upstream of here; `?? {}` keeps a null
+ * from becoming a crash in the mapper rather than at the call site.
+ */
+export function toPiMessages(m: ChatMessage, model: string): Message[] {
+  if (m.role === "user") {
+    return [{ role: "user", content: m.content, timestamp: Date.now() }];
+  }
+  if (m.role === "assistant") {
+    const content: (TextContent | PiToolCall)[] = [];
+    if (m.content.length > 0) content.push({ type: "text", text: m.content });
+    for (const c of m.toolCalls ?? []) {
+      content.push({ type: "toolCall", id: c.id, name: c.name, arguments: (c.args ?? {}) as PiToolCall["arguments"] });
+    }
+    if (content.length === 0) return [];
+    return [{ ...assistantEnvelope(model), content }];
+  }
+  return m.results.map((r): Message => ({
+    role: "toolResult",
+    toolCallId: r.id,
+    toolName: r.name,
+    content: [{ type: "text", text: r.output }],
+    isError: !r.ok,
+    timestamp: Date.now(),
+  }));
 }
 
 // The Responses adapter seeds a tool call's raw-argument buffer at
@@ -114,7 +151,7 @@ export class OpenAIResponsesProvider implements Provider {
 
     const context: Context = {
       systemPrompt: opts.system,
-      messages: opts.messages.map((m) => toPiMessage(m, opts.model)),
+      messages: opts.messages.flatMap((m) => toPiMessages(m, opts.model)),
       tools: opts.tools?.map((t) => ({
         name: t.name,
         description: t.description,

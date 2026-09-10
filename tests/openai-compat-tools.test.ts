@@ -111,7 +111,9 @@ test("openai-compat keeps text-only requests tool-free and abort suppresses buff
 for (const allow of [true, false]) {
   test(`compat-agent round trip persists ${allow ? "file evidence" : "denial"} and returns it to the provider`, async () => {
     const profile: ModelProfile | undefined = agentFixture;
-    expect(getProfile("astra-agent")).toBeUndefined();   // the registry must NOT advertise it
+    // astra-agent now EXISTS (a live arm earned it, PR #4) but it is an
+    // openai-responses profile; this compat arm still runs on its own fixture.
+    expect(getProfile("astra-agent")!.provider).toBe("openai-responses");
     expect(getProfile("astra")!.maxToolSurface).toBe(0);
     expect(profile!.sampling).toBeUndefined();
     const root = mkdtempSync(join(tmpdir(), "raziel-compat-tool-"));
@@ -137,7 +139,17 @@ for (const allow of [true, false]) {
         const result = store.replay().find((e) => e.type === "tool_result");
         expect(result).toMatchObject({ ok: allow, output: allow ? "audit evidence" : "denied by user", taint: "tool_output" });
         expect(store.replay().at(-1)).toMatchObject({ type: "turn_end", stop: "end" });
-        expect(requests[1].messages).toContainEqual({ role: "user", content: `[tool_result read_file] ${allow ? "audit evidence" : "denied by user"}` });
+        // The round replays as a REAL tool exchange now, not a stringified user
+      // message: the assistant turn claims the call and a role:"tool" message
+      // answers it by id. Asserting the old user-message form here is what let
+      // the starvation defect ship green.
+      const replayed = requests[1].messages;
+      expect(replayed.some((m: any) => typeof m.content === "string" && m.content.includes("[tool_result"))).toBe(false);
+      const asst = replayed.find((m: any) => m.role === "assistant" && m.tool_calls?.length);
+      expect(asst.tool_calls[0].function.name).toBe("read_file");
+      const toolMsg = replayed.find((m: any) => m.role === "tool");
+      expect(toolMsg.content).toContain(allow ? "audit evidence" : "denied by user");
+      expect(toolMsg.tool_call_id).toBe(asst.tool_calls[0].id);
         expect(requests[0].tools.map((t: any) => t.function.name)).toEqual([...registry.keys()]);
       });
     } finally {

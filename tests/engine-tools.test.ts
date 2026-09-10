@@ -218,7 +218,13 @@ test("argsHash mismatch (decide's returned hash doesn't match args about to exec
   expect(tr.output).toBe("argsHash mismatch — refusing");
 });
 
-test("context() replays tool_result events as '[tool_result <tool>] <output>' user messages on later turns", async () => {
+// RENAMED AND INVERTED, 2026-09-10. This arm used to REQUIRE the defect: it
+// asserted that a later turn saw the tool output as a user message reading
+// "[tool_result read_file] ...". That is precisely the transcript that made
+// two live models re-request an already-answered call to the round limit, and
+// the arm's green is why it shipped. It now asserts the contract instead; the
+// grouping, denial and ordering cases live in tests/tool-history-contract.ts.
+test("context() replays a tool round as a real assistant/tool exchange on later turns", async () => {
   const store = new SessionStore("t6");
   const ws = mkws();
   writeFileSync(join(ws.root, "note.txt"), "the answer is 42");
@@ -237,9 +243,12 @@ test("context() replays tool_result events as '[tool_result <tool>] <output>' us
   await drain(eng2.send("what did it say?"));
 
   const secondMessages = provider2.calls[0]!;
-  const toolMsg = secondMessages.find((m) => m.content.startsWith("[tool_result read_file]"));
-  expect(toolMsg).toBeDefined();
-  expect(toolMsg!.content).toContain("the answer is 42");
+  const asst = secondMessages.find((m) => m.role === "assistant" && ((m as any).toolCalls?.length ?? 0) > 0) as any;
+  expect(asst).toBeDefined();
+  expect(asst.toolCalls[0].name).toBe("read_file");
+  const toolMsg = secondMessages.find((m) => m.role === "tool") as any;
+  expect(toolMsg.results[0].output).toContain("the answer is 42");
+  expect(toolMsg.results[0].id).toBe(asst.toolCalls[0].id);
 });
 
 test("abort signal set before any round starts yields interrupt (no tool activity)", async () => {

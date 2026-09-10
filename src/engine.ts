@@ -1,5 +1,5 @@
 import { mkEvent, type EngineEvent, type SessionEvent } from "./events";
-import type { ChatMessage, Provider, TokenUsage } from "./provider";
+import type { ChatMessage, Provider, TokenUsage, ToolCall, ToolResult } from "./provider";
 import type { SessionStore } from "./session";
 import type { ModelProfile } from "./profiles";
 import { runToolTurn, type ToolDeps } from "./engine_tools";
@@ -30,16 +30,81 @@ export class Engine {
     }
   }
 
-  // Replays persisted turns into provider-facing messages. tool_result
-  // events replay as a user-role "[tool_result <tool>] <output>" message so
-  // a resumed session keeps the tool's output in context.
+  /** Replays persisted events into provider-facing messages.
+   *
+   * The shape this produces is the whole point, so it is stated plainly: a tool
+   * round replays as an ASSISTANT message carrying the round's tool calls,
+   * immediately followed by ONE tool message carrying that round's results in
+   * request order. Before 2026-09-10 a round replayed as a bare user message
+   * reading "[tool_result read_file] ...", with no assistant turn anywhere --
+   * so the model was shown a tool result for a call it could not see itself
+   * having made, and did the reasonable thing: it made the call. Both live arms
+   * (Claude on PR #2, astra on PR #4) then re-requested the identical read until
+   * the round limit fired. The loop was never confused; it was correctly
+   * responding to a transcript that lied about its own past.
+   *
+   * Three properties this must keep, each of which was a way to get it wrong:
+   *
+   * 1. Grouping is by the PERSISTED `round`, never by adjacency. Requests and
+   *    results interleave per call in the log (handleToolCall emits
+   *    request/approval/result for one call before starting the next), so
+   *    adjacency would split a single parallel round into several.
+   * 2. A request with NO round -- every session recorded before the field
+   *    existed -- becomes its own round. That is the honest reading: such a log
+   *    genuinely does not record whether two calls shared a round, and inventing
+   *    a grouping is the fabrication this method exists to stop.
+   * 3. A denied or failed call replays with `ok: false` and its output, NOT as
+   *    an absence. A request whose result is missing reads to the model as
+   *    unanswered, which is the same starvation in a quieter costume. Denials
+   *    already carry a real tool_result ("denied by user"), so this needs no
+   *    special case -- but a call that never got one (an abort mid-round) is
+   *    synthesised below rather than left dangling.
+   */
   private context(): ChatMessage[] {
     const msgs: ChatMessage[] = [];
-    for (const e of this.store.replay()) {
-      if (e.type === "user_message") msgs.push({ role: "user", content: e.text });
-      else if (e.type === "assistant_message") msgs.push({ role: "assistant", content: e.text });
-      else if (e.type === "tool_result") msgs.push({ role: "user", content: `[tool_result ${e.tool}] ${e.output}` });
+    // Read the log ONCE. replay() re-reads and re-parses the session file on
+    // every call, so two passes over `this.store.replay()` are two different
+    // reads of a file the live turn is still appending to -- the result map
+    // could then answer for requests the second pass has not seen, or not
+    // answer for ones it has.
+    const events = this.store.replay();
+    // requestId -> the output that answered it, for the pairing below.
+    const results = new Map<string, Extract<SessionEvent, { type: "tool_result" }>>();
+    for (const e of events) if (e.type === "tool_result") results.set(e.requestId, e);
+
+    // Requests in log order, bucketed by round. `key` is the round number when
+    // one was persisted and a unique per-request sentinel when it was not, so
+    // property 2 falls out of the grouping rather than needing a branch.
+    let pending: { key: string; calls: ToolCall[]; out: ToolResult[] } | null = null;
+
+    const flush = (): void => {
+      if (!pending) return;
+      msgs.push({ role: "assistant", content: "", toolCalls: pending.calls });
+      msgs.push({ role: "tool", results: pending.out });
+      pending = null;
+    };
+
+    for (const e of events) {
+      if (e.type === "user_message") { flush(); msgs.push({ role: "user", content: e.text }); }
+      else if (e.type === "assistant_message") { flush(); msgs.push({ role: "assistant", content: e.text }); }
+      else if (e.type === "tool_request") {
+        const key = e.round === undefined ? `solo:${e.requestId}` : `round:${e.turn}:${e.round}`;
+        if (pending && pending.key !== key) flush();
+        if (!pending) pending = { key, calls: [], out: [] };
+        pending.calls.push({ id: e.requestId, name: e.tool, args: e.args });
+        const res = results.get(e.requestId);
+        pending.out.push(
+          res
+            ? { id: e.requestId, name: e.tool, ok: res.ok, output: res.output }
+            // No result was ever persisted for this request -- the turn was cut
+            // short between the two appends. Say that, rather than drop the
+            // call: an assistant tool call with no matching result is a
+            // protocol error on anthropic and a silent gap everywhere else.
+            : { id: e.requestId, name: e.tool, ok: false, output: "no result recorded (turn ended before the tool answered)" },
+        );
+      }
     }
+    flush();
     return msgs;
   }
 

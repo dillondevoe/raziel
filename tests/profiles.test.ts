@@ -36,7 +36,7 @@ test("getProfile returns undefined for an unknown id", () => {
 
 test("listProfiles returns every registry entry", () => {
   const all = listProfiles();
-  expect(all.map((p) => p.id).sort()).toEqual(["astra", "qwen", "sonnet"]);
+  expect(all.map((p) => p.id).sort()).toEqual(["astra", "astra-agent", "qwen", "sonnet"]);
 });
 
 test("defaultProfileId is sonnet", () => {

@@ -1,4 +1,5 @@
 import { mkEvent, type EngineEvent, type SessionEvent } from "./events";
+import type { ToolCall } from "./provider";
 import type { ApprovalManager } from "./approvals";
 import type { BuiltinTool } from "./tools/files";
 import type { Workspace } from "./tools/workspace";
@@ -12,7 +13,11 @@ export type ToolDeps = {
   approvals: ApprovalManager;
 };
 
-export type ToolCall = { id: string; name: string; args: unknown };
+// Re-exported from the provider contract rather than declared a second time:
+// this type is the join between what a provider emits and what the engine
+// replays, and two structurally-identical declarations can drift apart
+// without a single compile error.
+export type { ToolCall } from "./provider";
 
 function toolResult(
   turn: string,
@@ -20,8 +25,9 @@ function toolResult(
   requestId: string,
   ok: boolean,
   output: string,
+  round: number,
 ): Extract<SessionEvent, { type: "tool_result" }> {
-  return mkEvent("tool_result", { turn, tool, ok, output: sanitizeForTerminal(output), requestId, taint: "tool_output" });
+  return mkEvent("tool_result", { turn, tool, ok, output: sanitizeForTerminal(output), requestId, taint: "tool_output", round });
 }
 
 async function execute(
@@ -68,13 +74,14 @@ export async function* handleToolCall(
   tools: ToolDeps,
   tryAppend: (e: SessionEvent) => void,
   signal: AbortSignal | undefined,
+  round: number,
 ): AsyncGenerator<EngineEvent, { aborted: boolean }> {
   if (signal?.aborted) return { aborted: true };
 
   const hash = argsHash(call.name, call.args);
   const req = mkEvent("tool_request", {
     turn, tool: call.name, args: call.args, requestId: call.id,
-    provenance: "provider_structured", argsHash: hash,
+    provenance: "provider_structured", argsHash: hash, round,
   });
   tryAppend(req);
   yield req;
@@ -91,7 +98,7 @@ export async function* handleToolCall(
     ({ decision, argsHash: decidedHash, persistRule } = await tools.approvals.decide(call.name, call.args, risk, tools.ws));
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
-    const tres = toolResult(turn, call.name, call.id, false, `approval error: ${message}`);
+    const tres = toolResult(turn, call.name, call.id, false, `approval error: ${message}`, round);
     tryAppend(tres);
     yield tres;
     return { aborted: false };
@@ -103,14 +110,14 @@ export async function* handleToolCall(
   yield adec;
 
   if (signal?.aborted) {
-    const tres = toolResult(turn, call.name, call.id, false, "aborted before execution");
+    const tres = toolResult(turn, call.name, call.id, false, "aborted before execution", round);
     tryAppend(tres);
     yield tres;
     return { aborted: true };
   }
 
   const result = await execute(call, decision, decidedHash, tools);
-  const tres = toolResult(turn, call.name, call.id, result.ok, result.output);
+  const tres = toolResult(turn, call.name, call.id, result.ok, result.output, round);
   // The side effect has already happened. Yield BEFORE the append so a store failure cannot
   // erase the result from the live stream; the append still throws and stops the turn.
   yield tres;
