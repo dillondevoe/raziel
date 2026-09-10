@@ -164,7 +164,7 @@ test("engine takes model from a profile and passes sampling through to the provi
   const provider = new FakeProvider([["hi"]]);
   const eng = new Engine({ provider, store, profile: getProfile("qwen")! });
   await drain(eng.send("go"));
-  expect(provider.optsLog[0]?.model).toBe("qwen3.5:9b");
+  expect(provider.optsLog[0]?.model).toBe(getProfile("qwen")!.model);   // the registry is the source of truth, not a literal
   expect(provider.optsLog[0]?.sampling).toEqual({ temperature: 0.7, topP: 0.8 });
 });
 
