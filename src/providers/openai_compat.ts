@@ -1,6 +1,6 @@
 import { stream as openaiCompletionsStream } from "@earendil-works/pi-ai/api/openai-completions";
-import type { AssistantMessageEvent, Context, Message, Model } from "@earendil-works/pi-ai";
-import type { ChatMessage, Provider, StreamChunk } from "../provider";
+import type { AssistantMessageEvent, Context, Message, Model, Tool } from "@earendil-works/pi-ai";
+import type { ChatMessage, Provider, StreamChunk, ToolSpec } from "../provider";
 
 const PROVIDER_ID = "openai-compat";
 const DEFAULT_CONTEXT_WINDOW = 32_768;
@@ -33,7 +33,8 @@ export function mapEvent(ev: AssistantMessageEvent): MapResult {
         error: new Error(ev.error.errorMessage ?? `openai-compat provider error: ${ev.reason}`),
       };
     default:
-      // start/text_start/text_end/thinking_*/toolcall_* — ignored in M1a.
+      // Tool events need per-stream accumulation and are handled in stream().
+      // Lifecycle and thinking events have no corresponding Provider chunk.
       return { kind: "skip" };
   }
 }
@@ -81,6 +82,7 @@ export class OpenAICompatProvider implements Provider {
     signal?: AbortSignal;
     sampling?: { temperature?: number; topP?: number };
     contextTokens?: number;
+    tools?: ToolSpec[];
   }): AsyncIterable<StreamChunk> {
     const model: Model<"openai-completions"> = {
       id: opts.model,
@@ -98,6 +100,7 @@ export class OpenAICompatProvider implements Provider {
     const context: Context = {
       systemPrompt: opts.system,
       messages: opts.messages.map((m) => toPiMessage(m, opts.model)),
+      tools: opts.tools?.map((t) => ({ name: t.name, description: t.description, parameters: t.inputSchema as Tool["parameters"] })),
     };
 
     const samplingParams: Record<string, unknown> = {};
@@ -114,12 +117,46 @@ export class OpenAICompatProvider implements Provider {
       ...(Object.keys(samplingParams).length > 0 ? { samplingParams } : {}),
     });
 
+    // pi-ai finalizes arguments with a lenient streaming parser. R13/R17 require
+    // parsing the complete raw deltas strictly, not trusting recovered arguments.
+    const toolArgs = new Map<number, string>();
+    // Tool events are only meaningful when the caller offered tools. A text-only turn that
+    // carries a stray tool_call (some endpoints do) must not lose its text to a strict-parse
+    // throw (review, PR #1).
+    const toolsOffered = (opts.tools?.length ?? 0) > 0;
     for await (const ev of events) {
       // pi-ai's stream() only checks the abort signal after its own network
       // loop drains — an already-buffered text_delta/done (parsed from the
       // same read as an earlier delta) still arrives here after abort()
       // fires. Guard every iteration, mirroring the ollama provider.
       if (opts.signal?.aborted) return;
+      if (!toolsOffered && (ev.type === "toolcall_start" || ev.type === "toolcall_delta" || ev.type === "toolcall_end")) continue;
+      if (ev.type === "toolcall_start") {
+        toolArgs.set(ev.contentIndex, "");
+        continue;
+      }
+      if (ev.type === "toolcall_delta") {
+        const raw = toolArgs.get(ev.contentIndex);
+        if (raw === undefined) throw new Error("openai-compat: tool delta without start");
+        toolArgs.set(ev.contentIndex, raw + ev.delta);
+        continue;
+      }
+      if (ev.type === "toolcall_end") {
+        const raw = toolArgs.get(ev.contentIndex);
+        toolArgs.delete(ev.contentIndex);
+        let args: unknown;
+        try {
+          if (raw === undefined) throw new Error("missing start");
+          args = raw.trim() === "" ? {} : JSON.parse(raw);   // zero-arg call: same as the anthropic provider
+        } catch {
+          throw new Error("openai-compat: invalid tool JSON");
+        }
+        const { id, name } = ev.toolCall;
+        if (!id || !name) throw new Error("openai-compat: tool call missing id or name");
+        yield { type: "tool_call", id, name, args };
+        continue;
+      }
+      if (ev.type === "done" && toolsOffered && toolArgs.size > 0) throw new Error("openai-compat: incomplete tool call");
       const r = mapEvent(ev);
       if (r.kind === "skip") continue;
       if (r.kind === "throw") throw r.error;

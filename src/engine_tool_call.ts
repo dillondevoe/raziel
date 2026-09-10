@@ -86,8 +86,9 @@ export async function* handleToolCall(
 
   let decision: "allow" | "deny";
   let decidedHash: string;
+  let persistRule: (() => void) | undefined;
   try {
-    ({ decision, argsHash: decidedHash } = await tools.approvals.decide(call.name, call.args, risk, tools.ws));
+    ({ decision, argsHash: decidedHash, persistRule } = await tools.approvals.decide(call.name, call.args, risk, tools.ws));
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
     const tres = toolResult(turn, call.name, call.id, false, `approval error: ${message}`);
@@ -97,7 +98,8 @@ export async function* handleToolCall(
   }
 
   const adec = mkEvent("approval_decision", { requestId: call.id, decision });
-  tryAppend(adec);
+  tryAppend(adec);          // throws on store failure -> the rule below is never written
+  persistRule?.();
   yield adec;
 
   if (signal?.aborted) {
@@ -109,7 +111,9 @@ export async function* handleToolCall(
 
   const result = await execute(call, decision, decidedHash, tools);
   const tres = toolResult(turn, call.name, call.id, result.ok, result.output);
-  tryAppend(tres);
+  // The side effect has already happened. Yield BEFORE the append so a store failure cannot
+  // erase the result from the live stream; the append still throws and stops the turn.
   yield tres;
+  tryAppend(tres);
   return { aborted: false };
 }

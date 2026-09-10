@@ -188,6 +188,11 @@ describe("ApprovalManager.decide", () => {
     expect(existsSync(rulesPath)).toBe(false);
     const result = await mgr.decide("write_file", { path: "x.txt", content: "hi" }, "medium", ws);
     expect(result.decision).toBe("allow");
+    // Deferred persistence: decide() hands back the write; the engine runs it only AFTER the
+    // approval_decision event is on disk, so a rule can never outlive a missing audit record.
+    expect(existsSync(rulesPath)).toBe(false);
+    expect(typeof result.persistRule).toBe("function");
+    result.persistRule!();
     expect(existsSync(rulesPath)).toBe(true);
     expect(rules.count()).toBe(1);
 
