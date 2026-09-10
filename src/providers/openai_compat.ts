@@ -173,12 +173,14 @@ export class OpenAICompatProvider implements Provider {
         yield { type: "tool_call", id, name, args };
         continue;
       }
-      if (ev.type === "done" && toolsOffered && toolArgs.size > 0) throw new Error("openai-compat: incomplete tool call");
       if (ev.type === "done" || (ev.type === "error" && ev.reason !== "aborted")) {
+        // Usage first: it was billed whether or not the rest of this stream is usable
+        // (review: the incomplete-tool-call throw sat above this and dropped parsed usage).
         const usage = reportedUsage(ev.type === "done" ? ev.message.usage : ev.error.usage);
         if (usage) yield { type: "usage", usage };
         if (opts.signal?.aborted) return;
       }
+      if (ev.type === "done" && toolsOffered && toolArgs.size > 0) throw new Error("openai-compat: incomplete tool call");
       const r = mapEvent(ev);
       if (r.kind === "skip") continue;
       if (r.kind === "throw") throw r.error;

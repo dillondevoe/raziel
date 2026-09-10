@@ -103,3 +103,15 @@ for (const final of [{}, { prompt_eval_count: 2 }, { eval_count: 3 }, { prompt_e
     expect(await collect(ollama(final))).toEqual([]);
   });
 }
+
+test("Ollama: a TRUNCATED trailing record (connection cut mid-line) ends the turn with the deltas kept, not a throw", async () => {
+  const raw = JSON.stringify({ message: { content: "partial " }, done: false }) + "\n" + '{"message":{"content":"answ';  // cut mid-record
+  const fetchImpl = (async () => new Response(new ReadableStream({ start(controller) {
+    controller.enqueue(new TextEncoder().encode(raw)); controller.close();
+  } }))) as unknown as typeof fetch;
+  const provider = new OllamaProvider({ fetchImpl });
+  const chunks: StreamChunk[] = [];   // collect() keeps only usage chunks; this arm needs the deltas too
+  for await (const c of provider.stream({ model: "fixture-model", messages: [{ role: "user", content: "hi" }] })) chunks.push(c);
+  expect(chunks.filter((c) => c.type === "delta")).toEqual([{ type: "delta", text: "partial " }]);
+  expect(chunks.some((c) => c.type === "usage")).toBe(false);
+});

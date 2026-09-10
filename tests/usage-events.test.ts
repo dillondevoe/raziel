@@ -135,3 +135,18 @@ test("Book renders usage independently of turn completion and sanitizes attribut
   expect(minimal).not.toContain("reasoning");
   expect(minimal).not.toContain("cache");
 });
+
+test("Book renders a turn's usage INSIDE that turn's block, under its own prompt (store order is user, usage, assistant, turn_end)", () => {
+  const turn = (n: string) => [
+    mkEvent("user_message", { text: `hello ${n}` }),
+    mkEvent("usage", { turn: n, provider: "fixture", model: "m", input_tokens: 1, output_tokens: 2 }),
+    mkEvent("assistant_message", { turn: n, text: `reply ${n}` }),
+    mkEvent("turn_end", { turn: n, stop: "end" }),
+  ];
+  const book = renderBook([...turn("one"), ...turn("two")]);
+  const i = (s: string) => { const k = book.indexOf(s); expect(k).toBeGreaterThanOrEqual(0); return k; };
+  expect(i("› hello one")).toBeLessThan(i("reply one"));
+  expect(i("reply one")).toBeLessThan(book.indexOf("usage fixture/m"));           // usage sits under the reply
+  expect(book.indexOf("usage fixture/m")).toBeLessThan(i("› hello two"));         // and before the NEXT prompt
+  expect(book.split("usage fixture/m").length - 1).toBe(2);
+});

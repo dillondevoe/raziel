@@ -59,8 +59,19 @@ export class OllamaProvider implements Provider {
         if (opts.signal?.aborted) return;
         throw err instanceof Error ? err : new Error(String(err));
       }
-      // Flush a final NDJSON record even when the server omits its trailing newline.
-      buf += done ? decoder.decode() + "\n" : decoder.decode(value, { stream: true });
+      // Flush a final NDJSON record even when the server omits its trailing newline —
+      // but a TRUNCATED trailing record (connection reset mid-line) is not a malformed
+      // line to throw on: the deltas already streamed are real. Only append the newline
+      // when the residue parses; otherwise leave it in `buf` and end the turn (review).
+      if (done) {
+        buf += decoder.decode();
+        const tail = buf.trim();
+        let tailOk = false;
+        if (tail) { try { JSON.parse(tail); tailOk = true; } catch { tailOk = false; } }
+        if (tailOk) buf += "\n"; else buf = "";
+      } else {
+        buf += decoder.decode(value, { stream: true });
+      }
 
       let idx: number;
       while ((idx = buf.indexOf("\n")) !== -1) {
