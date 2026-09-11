@@ -9,10 +9,10 @@ export type SessionEvent = Base & (
   | ({ type: "usage"; turn: string; provider: string; model: string } & TokenUsage)
   | { type: "turn_end"; turn: string; stop: "end" | "interrupt" | "error" }
   | { type: "error"; turn?: string; message: string }
-  | { type: "tool_request"; turn: string; tool: string; args: unknown; requestId: string; provenance: Provenance; argsHash: string }
+  | { type: "tool_request"; turn: string; tool: string; args: unknown; requestId: string; provenance: Provenance; argsHash: string; round?: number }
   | { type: "approval_request"; turn: string; requestId: string; tool: string; argsHash: string; risk: RiskClass }
   | { type: "approval_decision"; requestId: string; decision: "allow" | "deny" | "always" }
-  | { type: "tool_result"; turn: string; tool: string; ok: boolean; output: string; requestId: string; taint: "tool_output" }
+  | { type: "tool_result"; turn: string; tool: string; ok: boolean; output: string; requestId: string; taint: "tool_output"; round?: number }
 );
 
 export type EngineEvent = SessionEvent | { type: "assistant_delta"; turn: string; text: string };
@@ -41,6 +41,13 @@ const bool: FieldCheck = (v) => typeof v === "boolean";
 const tokens: FieldCheck = (v) => typeof v === "number" && Number.isSafeInteger(v) && v >= 0;
 const optTokens: FieldCheck = (v) => v === undefined || tokens(v);
 const anyVal: FieldCheck = () => true; // `args: unknown` — no primitive shape to enforce
+// `round` is OPTIONAL and must stay optional. Sessions recorded before
+// 2026-09-10 have no round field, and a REQUIRED check here would make
+// isValidEvent reject every historical tool event -- silently, because replay
+// SKIPS invalid lines rather than failing. Every old session would resume with
+// its tool history quietly deleted, which is a worse version of the defect the
+// round field exists to fix. Absent round is read as "one request per round".
+const optNum: FieldCheck = (v) => v === undefined || (typeof v === "number" && Number.isInteger(v) && v >= 0);
 const oneOf = (...allowed: string[]): FieldCheck => (v) => typeof v === "string" && allowed.includes(v);
 
 const FIELD_CHECKS: { [T in SessionEvent["type"]]: Record<string, FieldCheck> } = {
@@ -49,10 +56,10 @@ const FIELD_CHECKS: { [T in SessionEvent["type"]]: Record<string, FieldCheck> } 
   usage: { turn: str, provider: str, model: str, input_tokens: tokens, output_tokens: tokens, reasoning_tokens: optTokens, cache_read_tokens: optTokens, cache_write_tokens: optTokens },
   turn_end: { turn: str, stop: oneOf("end", "interrupt", "error") },
   error: { turn: optStr, message: str },
-  tool_request: { turn: str, tool: str, args: anyVal, requestId: str, provenance: oneOf("provider_structured"), argsHash: str },
+  tool_request: { turn: str, tool: str, args: anyVal, requestId: str, provenance: oneOf("provider_structured"), argsHash: str, round: optNum },
   approval_request: { turn: str, requestId: str, tool: str, argsHash: str, risk: oneOf("low", "medium", "high", "critical") },
   approval_decision: { requestId: str, decision: oneOf("allow", "deny", "always") },
-  tool_result: { turn: str, tool: str, ok: bool, output: str, requestId: str, taint: oneOf("tool_output") },
+  tool_result: { turn: str, tool: str, ok: bool, output: str, requestId: str, taint: oneOf("tool_output"), round: optNum },
 };
 
 /** Validates a parsed JSONL line as a well-formed SessionEvent: known `type`,

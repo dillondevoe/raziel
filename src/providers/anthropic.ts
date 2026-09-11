@@ -115,6 +115,83 @@ export function fromClaudeCodeName(name: string, tools?: ToolSpec[]): string {
   return tools.find((t) => t.name.toLowerCase() === lower)?.name ?? name;
 }
 
+
+/** ChatMessage[] -> Anthropic MessageParam[].
+ *
+ * Two wire facts drive the whole shape:
+ *
+ * - A round's tool_use blocks live on ONE assistant message, and every matching
+ *   tool_result block must arrive together on the NEXT message, which is
+ *   role "user" (anthropic has no "tool" role). Splitting a round's results
+ *   across messages, or omitting one, is a 400 -- so the batched `role: "tool"`
+ *   message maps one-to-one onto one user message of tool_result blocks.
+ * - `content: ""` is REJECTED by the API on an assistant message. A mid-turn
+ *   round legitimately has no prose, so an empty text block must be omitted
+ *   rather than sent -- the tool_use blocks are the content.
+ *
+ * `toClaudeCodeName` is applied to outbound `tool_use.name` for the same reason
+ * PR #2 applies it to the tool declarations: on the OAuth path the names the
+ * model was shown are the renamed ones, so replaying its OWN past call under
+ * the internal name shows it a call it never made. The rename must be applied
+ * everywhere a tool name crosses outbound, and a declaration is not the only
+ * place one does.
+ */
+/** The Messages API requires `tool_use.id` to match ^[a-zA-Z0-9_-]+$ and be at
+ * most 64 characters. Ids in the log are whatever the ORIGINATING provider
+ * issued: anthropic's own `toolu_…` already fit; the Responses provider
+ * persists pi-ai's `${call_id}|${item_id}` -- a `|`, plus an fc_ item id that
+ * can run to hundreds of chars -- and /model or /session can bring such a
+ * session here. Applied to BOTH sides of the join so it cannot split them, and
+ * the cut keeps the head, which is where the unique call_id sits. pi-ai's own
+ * anthropic adapter does the same; this tree drives the SDK directly, so it
+ * inherited none of that. Idempotent on an id that already fits. */
+export function toAnthropicToolId(id: string): string {
+  return id.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 64);
+}
+
+export function toAnthropicMessages(
+  messages: ChatMessage[],
+  rename?: (name: string) => string,
+): Anthropic.MessageParam[] {
+  const out: Anthropic.MessageParam[] = [];
+  for (const m of messages) {
+    if (m.role === "user") {
+      out.push({ role: "user", content: m.content });
+    } else if (m.role === "assistant") {
+      const blocks: Anthropic.ContentBlockParam[] = [];
+      if (m.content.length > 0) blocks.push({ type: "text", text: m.content });
+      for (const c of m.toolCalls ?? []) {
+        blocks.push({
+          type: "tool_use",
+          id: toAnthropicToolId(c.id),
+          name: rename ? rename(c.name) : c.name,
+          input: (c.args ?? {}) as Record<string, unknown>,
+        });
+      }
+      // An assistant message with neither text nor tool calls has no valid
+      // representation here; dropping it is correct and lossless (it carried
+      // nothing), whereas sending an empty content array is a 400.
+      if (blocks.length > 0) out.push({ role: "assistant", content: blocks });
+    } else {
+      out.push({
+        role: "user",
+        content: m.results.map((r): Anthropic.ToolResultBlockParam => ({
+          type: "tool_result",
+          tool_use_id: toAnthropicToolId(r.id),
+          // grep with no matches and read_file on an empty file both return
+          // ok:true with "". An empty text BLOCK is rejected by the API; an
+          // empty STRING here was not confirmed either way, and a persisted
+          // tool round that 400s poisons every later turn of the session, so
+          // send a stated absence -- which is also true, and more useful.
+          content: r.output.length > 0 ? r.output : "(no output)",
+          is_error: !r.ok,
+        })),
+      });
+    }
+  }
+  return out;
+}
+
 export class AnthropicProvider implements Provider {
   readonly name = "anthropic";
   private client: Anthropic;
@@ -161,7 +238,7 @@ export class AnthropicProvider implements Provider {
             ],
           }
         : { system: opts.system }),
-      messages: opts.messages,
+      messages: toAnthropicMessages(opts.messages, this.oauth ? toClaudeCodeName : undefined),
       ...(opts.sampling?.temperature !== undefined ? { temperature: opts.sampling.temperature } : {}),
       ...(opts.sampling?.topP !== undefined ? { top_p: opts.sampling.topP } : {}),
       ...(opts.tools && opts.tools.length > 0

@@ -1,6 +1,7 @@
 import { stream as openaiCompletionsStream } from "@earendil-works/pi-ai/api/openai-completions";
-import type { AssistantMessageEvent, Context, Message, Model, Tool, Usage } from "@earendil-works/pi-ai";
-import type { ChatMessage, Provider, StreamChunk, ToolSpec, TokenUsage } from "../provider";
+import type { AssistantMessageEvent, Context, Message, Model, TextContent, Tool, ToolCall as PiToolCall } from "@earendil-works/pi-ai";
+import type { ChatMessage, Provider, StreamChunk, ToolSpec } from "../provider";
+import { reportedUsage } from "./pi_usage";
 
 const PROVIDER_ID = "openai-compat";
 const DEFAULT_CONTEXT_WINDOW = 32_768;
@@ -11,21 +12,6 @@ const DEFAULT_MAX_TOKENS = 8192;
 // This placeholder keeps keyless endpoints working; a real apiKey always overrides it.
 const KEYLESS_API_KEY = "not-needed";
 
-// pi-ai 0.84.4: initial placeholder usage has NO reasoning property (:177),
-// whereas parseChunkUsage ALWAYS sets it (:1198), even for an all-zero report.
-// This distinguishes missing usage without re-parsing SSE or testing total > 0.
-// Optional zero breakdowns are ambiguous: the parser defaults missing fields to
-// zero. Omit those rather than claim they were reported. Recheck on upgrades.
-function reportedUsage(usage: Usage): TokenUsage | undefined {
-  if (usage.reasoning === undefined) return undefined;
-  return {
-    input_tokens: usage.input,
-    output_tokens: usage.output,
-    ...(usage.reasoning > 0 ? { reasoning_tokens: usage.reasoning } : {}),
-    ...(usage.cacheRead > 0 ? { cache_read_tokens: usage.cacheRead } : {}),
-    ...(usage.cacheWrite > 0 ? { cache_write_tokens: usage.cacheWrite } : {}),
-  };
-}
 
 // Exported so the RED/GREEN suite (and any future caller) can unit-test the
 // event-mapping layer directly against hand-built pi-ai AssistantMessageEvent objects,
@@ -55,30 +41,51 @@ export function mapEvent(ev: AssistantMessageEvent): MapResult {
   }
 }
 
-function toPiMessage(m: ChatMessage, model: string): Message {
+/** ChatMessage[] -> pi-ai Message[], rendered by the completions adapter as
+ * `tool_calls` on the assistant message and `role: "tool"` messages carrying
+ * `tool_call_id`. Structurally identical to the Responses mapper (pi-ai models
+ * a tool result as its own top-level message either way) and different only in
+ * the `api` tag, which selects the wire rendering.
+ *
+ * One `role: "tool"` ChatMessage EXPANDS to N messages, so this returns an
+ * array. The join is `toolCallId` against the assistant block's `id`.
+ */
+export function toPiMessages(m: ChatMessage, model: string): Message[] {
   if (m.role === "user") {
-    return { role: "user", content: m.content, timestamp: Date.now() };
+    return [{ role: "user", content: m.content, timestamp: Date.now() }];
   }
-  // Our frozen ChatMessage has no notion of pi-ai's richer AssistantMessage (usage,
-  // stopReason, provider/model bookkeeping) — synthesize the minimal valid shape so
-  // prior assistant turns can be replayed back into context.
-  return {
-    role: "assistant",
-    content: [{ type: "text", text: m.content }],
-    api: "openai-completions",
-    provider: PROVIDER_ID,
-    model,
-    usage: {
-      input: 0,
-      output: 0,
-      cacheRead: 0,
-      cacheWrite: 0,
-      totalTokens: 0,
-      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-    },
-    stopReason: "stop",
+  if (m.role === "assistant") {
+    const content: (TextContent | PiToolCall)[] = [];
+    if (m.content.length > 0) content.push({ type: "text", text: m.content });
+    for (const c of m.toolCalls ?? []) {
+      content.push({ type: "toolCall", id: c.id, name: c.name, arguments: (c.args ?? {}) as PiToolCall["arguments"] });
+    }
+    if (content.length === 0) return [];
+    // Our ChatMessage has no notion of pi-ai's richer AssistantMessage (usage,
+    // stopReason, provider/model bookkeeping) -- synthesize the minimal valid
+    // shape so prior assistant turns replay back into context.
+    return [{
+      role: "assistant",
+      content,
+      api: "openai-completions",
+      provider: PROVIDER_ID,
+      model,
+      usage: {
+        input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+      },
+      stopReason: "stop",
+      timestamp: Date.now(),
+    }];
+  }
+  return m.results.map((r): Message => ({
+    role: "toolResult",
+    toolCallId: r.id,
+    toolName: r.name,
+    content: [{ type: "text", text: r.output }],
+    isError: !r.ok,
     timestamp: Date.now(),
-  };
+  }));
 }
 
 export class OpenAICompatProvider implements Provider {
@@ -115,7 +122,7 @@ export class OpenAICompatProvider implements Provider {
 
     const context: Context = {
       systemPrompt: opts.system,
-      messages: opts.messages.map((m) => toPiMessage(m, opts.model)),
+      messages: opts.messages.flatMap((m) => toPiMessages(m, opts.model)),
       tools: opts.tools?.map((t) => ({ name: t.name, description: t.description, parameters: t.inputSchema as Tool["parameters"] })),
     };
 

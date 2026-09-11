@@ -3,6 +3,7 @@ import type { SessionStore } from "./session";
 import { AnthropicProvider } from "./providers/anthropic";
 import { OllamaProvider } from "./providers/ollama";
 import { OpenAICompatProvider } from "./providers/openai_compat";
+import { OpenAIResponsesProvider } from "./providers/openai_responses";
 import type { Provider } from "./provider";
 import { getProfile, listProfiles, type ModelProfile } from "./profiles";
 import { loadSystemPrompt } from "./system_prompt";
@@ -40,6 +41,18 @@ export function providerFor(p: ModelProfile, fetchImpl?: typeof fetch): Provider
       }
       const apiKey = p.apiKeyEnv ? process.env[p.apiKeyEnv] : process.env.RAZIEL_COMPAT_KEY;
       return new OpenAICompatProvider({ baseUrl: p.baseUrl, apiKey });
+    }
+    case "openai-responses": {
+      // Same two rules as openai-compat and for the same reasons: a baseUrl is
+      // structural, and a declared apiKeyEnv is a claim that the endpoint is
+      // keyed -- refuse here rather than send the keyless placeholder and let
+      // the endpoint report our config error as its own 401.
+      if (!p.baseUrl) throw new Error(`profile ${p.id} missing baseUrl`);
+      if (p.apiKeyEnv && !process.env[p.apiKeyEnv]) {
+        throw new Error(`profile ${p.id} requires ${p.apiKeyEnv} to be set`);
+      }
+      const apiKey = p.apiKeyEnv ? process.env[p.apiKeyEnv] : process.env.RAZIEL_COMPAT_KEY;
+      return new OpenAIResponsesProvider({ baseUrl: p.baseUrl, apiKey });
     }
   }
 }

@@ -1,6 +1,68 @@
 import type { ChatMessage, Provider, StreamChunk } from "../provider";
 
-type OllamaMessage = { role: "system" | "user" | "assistant"; content: string };
+type OllamaToolCall = { function: { name: string; arguments: Record<string, unknown> } };
+type OllamaMessage = {
+  role: "system" | "user" | "assistant" | "tool";
+  content: string;
+  tool_calls?: OllamaToolCall[];
+  // Ollama accepts (and newer builds echo) a tool name on a result message. It
+  // is NOT a second handle on which result is which -- that was measured, and
+  // the answer is that the model IGNORES it. Sent anyway, for human
+  // readability of a wire dump and for a provider that does honour it.
+  //
+  // Augur's probes, qwen2.5:7b, 2 parallel calls, 2026-09-10. First round:
+  // the join is positional, and a CORRECT tool_call_id is inert. Second round
+  // (arm C-prime, run because his first probe sent `content` only and so said
+  // nothing about THIS field): results replayed so that name and position
+  // DISAGREE. Reversed + correct tool_name -> still swapped; reversed +
+  // correct name AND id -> still swapped; and the arm that settles it,
+  // IN ORDER + a flatly WRONG tool_name -> still CORRECT. A field that can
+  // neither repair a broken join nor corrupt a working one is not
+  // participating in the join. The model narrated it unprompted: "based on
+  // the first response number... based on the second response number."
+  //
+  // So nothing in this mapping may lean on it. The positional discipline in
+  // toOllamaMessages is the only thing holding, and a dropped or reordered
+  // result is NOT recoverable from this field. Open: >2 calls, and repeated
+  // same-tool calls, where a name could not disambiguate even in principle.
+  tool_name?: string;
+};
+
+/** ChatMessage[] -> ollama's native /api/chat message list.
+ *
+ * THE JOIN IS POSITIONAL, and that is the one thing to be careful about here.
+ * Ollama's tool calls carry NO id: an assistant message holds `tool_calls` in
+ * order, and the `role: "tool"` messages that follow are matched to them by
+ * ORDER ALONE. So a round's results must be emitted in the same order as its
+ * calls and none may be skipped -- dropping a failed one does not lose one
+ * result, it silently re-pairs every result after it with the wrong call.
+ * That is why a denial replays as an ok:false result with text rather than as
+ * an omission, and why this loop never filters.
+ *
+ * `arguments` is an OBJECT here, not a JSON string as on the OpenAI wire.
+ */
+export function toOllamaMessages(messages: ChatMessage[], system?: string): OllamaMessage[] {
+  const out: OllamaMessage[] = [];
+  if (system) out.push({ role: "system", content: system });
+  for (const m of messages) {
+    if (m.role === "user") {
+      out.push({ role: "user", content: m.content });
+    } else if (m.role === "assistant") {
+      const calls = m.toolCalls ?? [];
+      if (calls.length === 0) { out.push({ role: "assistant", content: m.content }); continue; }
+      out.push({
+        role: "assistant",
+        content: m.content,
+        tool_calls: calls.map((c) => ({
+          function: { name: c.name, arguments: (c.args ?? {}) as Record<string, unknown> },
+        })),
+      });
+    } else {
+      for (const r of m.results) out.push({ role: "tool", content: r.output, tool_name: r.name });
+    }
+  }
+  return out;
+}
 
 const DEFAULT_BASE_URL = "http://127.0.0.1:11434";
 // The silent-4K default is ollama's — never let it apply. See landscape scan.
@@ -24,9 +86,7 @@ export class OllamaProvider implements Provider {
     sampling?: { temperature?: number; topP?: number };
     contextTokens?: number;
   }): AsyncIterable<StreamChunk> {
-    const messages: OllamaMessage[] = [];
-    if (opts.system) messages.push({ role: "system", content: opts.system });
-    for (const m of opts.messages) messages.push({ role: m.role, content: m.content });
+    const messages = toOllamaMessages(opts.messages, opts.system);
 
     const options: Record<string, unknown> = { num_ctx: opts.contextTokens ?? DEFAULT_CONTEXT_TOKENS };
     if (opts.sampling?.temperature !== undefined) options.temperature = opts.sampling.temperature;

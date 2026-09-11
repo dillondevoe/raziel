@@ -36,7 +36,7 @@ test("getProfile returns undefined for an unknown id", () => {
 
 test("listProfiles returns every registry entry", () => {
   const all = listProfiles();
-  expect(all.map((p) => p.id).sort()).toEqual(["astra", "qwen", "sonnet"]);
+  expect(all.map((p) => p.id).sort()).toEqual(["astra", "astra-agent", "qwen", "sonnet"]);
 });
 
 test("defaultProfileId is sonnet", () => {
@@ -55,4 +55,11 @@ test("registry entries are frozen — a caller can't mutate the live objects (M9
   expect(getProfile("qwen")!.sampling).toEqual({ temperature: 0.7, topP: 0.8 });
 
   expect(() => { (listProfiles() as any).push({}); }).toThrow();
+});
+
+// Geist gate 2026-09-10: the persona travels with the MODEL, not the door. A
+// /model astra -> astra-agent swap dropped it silently before this arm existed.
+test("astra-agent carries the same persona file as astra", () => {
+  expect(getProfile("astra-agent")?.systemFile).toBeDefined();
+  expect(getProfile("astra-agent")?.systemFile).toBe(getProfile("astra")!.systemFile);
 });

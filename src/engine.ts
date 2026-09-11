@@ -1,5 +1,5 @@
 import { mkEvent, type EngineEvent, type SessionEvent } from "./events";
-import type { ChatMessage, Provider, TokenUsage } from "./provider";
+import type { ChatMessage, Provider, TokenUsage, ToolCall, ToolResult } from "./provider";
 import type { SessionStore } from "./session";
 import type { ModelProfile } from "./profiles";
 import { runToolTurn, type ToolDeps } from "./engine_tools";
@@ -30,16 +30,109 @@ export class Engine {
     }
   }
 
-  // Replays persisted turns into provider-facing messages. tool_result
-  // events replay as a user-role "[tool_result <tool>] <output>" message so
-  // a resumed session keeps the tool's output in context.
+  /** Replays persisted events into provider-facing messages.
+   *
+   * The shape this produces is the whole point, so it is stated plainly: a tool
+   * round replays as an ASSISTANT message carrying the round's tool calls,
+   * immediately followed by ONE tool message carrying that round's results in
+   * request order. Before 2026-09-10 a round replayed as a bare user message
+   * reading "[tool_result read_file] ...", with no assistant turn anywhere --
+   * so the model was shown a tool result for a call it could not see itself
+   * having made, and did the reasonable thing: it made the call. Both live arms
+   * (Claude on PR #2, astra on PR #4) then re-requested the identical read until
+   * the round limit fired. The loop was never confused; it was correctly
+   * responding to a transcript that lied about its own past.
+   *
+   * Four properties this must keep, each of which was a way to get it wrong:
+   *
+   * 1. Grouping is by the PERSISTED `round`, never by adjacency. Requests and
+   *    results interleave per call in the log (handleToolCall emits
+   *    request/approval/result for one call before starting the next), so
+   *    adjacency would split a single parallel round into several.
+   * 2. A request with NO round -- every session recorded before the field
+   *    existed -- becomes its own round. That is the honest reading: such a log
+   *    genuinely does not record whether two calls shared a round, and inventing
+   *    a grouping is the fabrication this method exists to stop.
+   * 3. A denied or failed call replays with `ok: false` and its output, NOT as
+   *    an absence. A request whose result is missing reads to the model as
+   *    unanswered, which is the same starvation in a quieter costume. Denials
+   *    already carry a real tool_result ("denied by user"), so this needs no
+   *    special case -- but a call that never got one (an abort mid-round) is
+   *    synthesised below rather than left dangling.
+   * 4. A result is paired to the NEAREST PRECEDING unanswered request with its
+   *    id, never through a log-wide map. requestId is the provider's id and is
+   *    only unique per response; per-response counters (call_0 every round)
+   *    made a global map answer round 0 with round 1's output. A result whose
+   *    request line did not survive replays as a labelled user-role recovery
+   *    note -- never dropped (the evidence a side effect happened), never
+   *    promoted to a call (no record says one was made).
+   */
   private context(): ChatMessage[] {
     const msgs: ChatMessage[] = [];
-    for (const e of this.store.replay()) {
-      if (e.type === "user_message") msgs.push({ role: "user", content: e.text });
-      else if (e.type === "assistant_message") msgs.push({ role: "assistant", content: e.text });
-      else if (e.type === "tool_result") msgs.push({ role: "user", content: `[tool_result ${e.tool}] ${e.output}` });
+    // Read the log ONCE. replay() re-reads and re-parses the session file on
+    // every call, so two passes over `this.store.replay()` are two different
+    // reads of a file the live turn is still appending to.
+    const events = this.store.replay();
+
+    // ONE pass, in log order, and pairing is by POSITION not by a global map.
+    // requestId is the PROVIDER's tool-call id -- unique per response at best.
+    // Several openai-compat servers and local tool parsers emit per-response
+    // counters (call_0, call_1) that restart every round, so a map keyed by
+    // bare requestId across the whole log was last-write-wins: round 0's call
+    // answered with round 1's output, well-formed on every wire (review, Geist
+    // gate 2026-09-10, two angles independently). A tool_result answers the
+    // NEAREST PRECEDING request with its id that has no answer yet; the log
+    // appends request-then-result per call, so that is the only correct join.
+    let pending: { key: string; calls: ToolCall[]; out: (ToolResult | null)[] } | null = null;
+
+    const flush = (): void => {
+      if (!pending) return;
+      msgs.push({ role: "assistant", content: "", toolCalls: pending.calls });
+      msgs.push({
+        role: "tool",
+        results: pending.out.map((r, i) =>
+          r ?? {
+            // No result was ever persisted for this request -- the turn was cut
+            // short between the two appends. Say that, rather than drop the
+            // call: an assistant tool call with no matching result is a
+            // protocol error on anthropic and a silent gap everywhere else.
+            id: pending!.calls[i]!.id, name: pending!.calls[i]!.name, ok: false,
+            output: "no result recorded (turn ended before the tool answered)",
+          }),
+      });
+      pending = null;
+    };
+
+    for (const e of events) {
+      if (e.type === "user_message") { flush(); msgs.push({ role: "user", content: e.text }); }
+      else if (e.type === "assistant_message") { flush(); msgs.push({ role: "assistant", content: e.text }); }
+      else if (e.type === "tool_request") {
+        const key = e.round === undefined ? `solo:${e.requestId}` : `round:${e.turn}:${e.round}`;
+        if (pending && pending.key !== key) flush();
+        if (!pending) pending = { key, calls: [], out: [] };
+        pending.calls.push({ id: e.requestId, name: e.tool, args: e.args });
+        pending.out.push(null);
+      }
+      else if (e.type === "tool_result") {
+        // Nearest preceding unanswered request with this id, inside the open
+        // round -- results never outlive their round in the log (the next
+        // round's request, or the turn's assistant_message, comes after them).
+        let i = pending ? pending.calls.length - 1 : -1;
+        while (i >= 0 && !(pending!.calls[i]!.id === e.requestId && pending!.out[i] === null)) i--;
+        if (i >= 0) { pending!.out[i] = { id: e.requestId, name: e.tool, ok: e.ok, output: e.output }; continue; }
+        // ORPHAN: the request line is gone (torn append, or rejected by
+        // isValidEvent) and the result survived. It cannot be replayed as an
+        // assistant call -- no record says one was made, and inventing it is
+        // the fabrication this method exists to stop -- but dropping it loses
+        // the evidence that a side effect already happened, after which the
+        // model does it again. So it replays as a user-role note that says
+        // exactly what it is. This is the ONE place a tool output rides in a
+        // user message, and it is labelled as a recovery, not as a result.
+        flush();
+        msgs.push({ role: "user", content: `[recovered tool_result ${e.tool}; its request record was lost] ${e.output}` });
+      }
     }
+    flush();
     return msgs;
   }
 
