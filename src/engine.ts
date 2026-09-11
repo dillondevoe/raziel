@@ -3,6 +3,7 @@ import type { ChatMessage, Provider, TokenUsage, ToolCall, ToolResult } from "./
 import type { SessionStore } from "./session";
 import type { ModelProfile } from "./profiles";
 import { runToolTurn, type ToolDeps } from "./engine_tools";
+import { applyBudget } from "./context_budget";
 
 type EngineOpts = { provider: Provider; store: SessionStore; system?: string; tools?: ToolDeps; maxRounds?: number }
   & ({ model: string; profile?: never } | { model?: never; profile: ModelProfile });
@@ -148,6 +149,12 @@ export class Engine {
 
   async *send(text: string, o?: { signal?: AbortSignal }): AsyncIterable<EngineEvent> {
     const { store, provider, model, system, sampling, contextTokens, tools } = this;
+    // Budget only the disposable provider view. context() and the log stay whole.
+    // Raw-model callers have no profile budget, so preserve their full replay.
+    const wireContext = (): ChatMessage[] => {
+      const msgs = this.context();
+      return contextTokens === undefined ? msgs : applyBudget(msgs, { contextTokens }).msgs;
+    };
     const turn = `turn-${crypto.randomUUID()}`;
     const user = mkEvent("user_message", { text });
     try {
@@ -198,7 +205,7 @@ export class Engine {
           provider, model, system, sampling, contextTokens, turn, tools,
           maxRounds: this.maxRounds,
           signal: o?.signal,
-          getContext: () => this.context(),
+          getContext: wireContext,
           // A missing audit record stops the turn before further tool work.
           tryAppend: appendAudit,
           onDelta: (t) => { acc += t; },
@@ -208,7 +215,7 @@ export class Engine {
         return;
       }
 
-      for await (const chunk of provider.stream({ model, system, messages: this.context(), signal: o?.signal, sampling, contextTokens })) {
+      for await (const chunk of provider.stream({ model, system, messages: wireContext(), signal: o?.signal, sampling, contextTokens })) {
         if (chunk.type === "done") { sawDone = true; continue; }   // a delivered done is always recorded
         if (o?.signal?.aborted) { interrupted = true; break; }
         if (chunk.type === "usage" && !sawUsage) { sawUsage = true; yield recordUsage(chunk.usage); }

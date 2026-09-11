@@ -77,7 +77,7 @@ describe("OAuth transport (intercepted request)", () => {
   test("system is a block array led by the Claude Code identity", async () => {
     const c = await drive(OAUTH);
     expect(Array.isArray(c.body.system)).toBe(true);
-    expect(c.body.system[0]).toEqual({ type: "text", text: CLAUDE_CODE_IDENTITY });
+    expect(c.body.system[0]).toEqual({ type: "text", text: CLAUDE_CODE_IDENTITY, cache_control: { type: "ephemeral" } });
     expect(c.body.system.length).toBe(1);
   });
 
@@ -85,7 +85,7 @@ describe("OAuth transport (intercepted request)", () => {
     const c = await drive(OAUTH, "You are Astra.");
     expect(c.body.system.length).toBe(2);
     expect(c.body.system[0]!.text).toBe(CLAUDE_CODE_IDENTITY);
-    expect(c.body.system[1]).toEqual({ type: "text", text: "You are Astra." });
+    expect(c.body.system[1]).toEqual({ type: "text", text: "You are Astra.", cache_control: { type: "ephemeral" } });
   });
 });
 
@@ -105,9 +105,9 @@ describe("API-key transport is UNCHANGED (control arm)", () => {
     expect(c.headers["user-agent"] ?? "").not.toContain("claude-cli/");
   });
 
-  test("system stays a bare string on the API-key path", async () => {
+  test("system uses a cacheable text block on the API-key path without changing its text", async () => {
     const c = await drive(APIKEY, "You are Astra.");
-    expect(c.body.system).toBe("You are Astra.");
+    expect(c.body.system).toEqual([{ type: "text", text: "You are Astra.", cache_control: { type: "ephemeral" } }]);
   });
 
   test("and is absent when the caller sets none", async () => {
