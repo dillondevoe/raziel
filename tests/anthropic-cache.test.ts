@@ -52,7 +52,7 @@ for (const apiKey of ["test-key", "sk-ant-oat01-test"]) {
     ]);
     expect(body.system[lastSystem]).toEqual({ type: "text", text: "Fixed persona", cache_control: cache });
     expect(body.tools[1].cache_control).toEqual(cache);
-    expect(body.messages[1].content).toBe("old answer");
+    expect(body.messages[1].content).toEqual([{ type: "text", text: "old answer" }]); // no mark mid-history
     expect(body.messages[2]).toEqual({ role: "user", content: "current question" });
     expect(body.messages[4].content[0]).toMatchObject({ type: "tool_result", tool_use_id: "c", cache_control: cache });
     if (lastSystem === 1) expect(body.system[0]).toEqual({ type: "text", text: CLAUDE_CODE_IDENTITY });
