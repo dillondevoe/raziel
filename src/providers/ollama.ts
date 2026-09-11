@@ -1,6 +1,7 @@
-import type { ChatMessage, Provider, StreamChunk } from "../provider";
+import type { ChatMessage, Provider, StreamChunk, ToolSpec } from "../provider";
 
-type OllamaToolCall = { function: { name: string; arguments: Record<string, unknown> } };
+// Native calls may carry an id (version-dependent); the join stays positional.
+type OllamaToolCall = { id?: string; function: { name: string; arguments: Record<string, unknown> } };
 type OllamaMessage = {
   role: "system" | "user" | "assistant" | "tool";
   content: string;
@@ -31,8 +32,9 @@ type OllamaMessage = {
 /** ChatMessage[] -> ollama's native /api/chat message list.
  *
  * THE JOIN IS POSITIONAL, and that is the one thing to be careful about here.
- * Ollama's tool calls carry NO id: an assistant message holds `tool_calls` in
- * order, and the `role: "tool"` messages that follow are matched to them by
+ * Ollama's tool calls may carry an id (version-dependent); the join stays
+ * positional. An assistant message holds `tool_calls` in order, and the
+ * `role: "tool"` messages that follow are matched to them by
  * ORDER ALONE. So a round's results must be emitted in the same order as its
  * calls and none may be skipped -- dropping a failed one does not lose one
  * result, it silently re-pairs every result after it with the wrong call.
@@ -85,8 +87,10 @@ export class OllamaProvider implements Provider {
     signal?: AbortSignal;
     sampling?: { temperature?: number; topP?: number };
     contextTokens?: number;
+    tools?: ToolSpec[];
   }): AsyncIterable<StreamChunk> {
     const messages = toOllamaMessages(opts.messages, opts.system);
+    const toolsOffered = (opts.tools?.length ?? 0) > 0;
 
     const options: Record<string, unknown> = { num_ctx: opts.contextTokens ?? DEFAULT_CONTEXT_TOKENS };
     if (opts.sampling?.temperature !== undefined) options.temperature = opts.sampling.temperature;
@@ -95,7 +99,11 @@ export class OllamaProvider implements Provider {
     const res = await this.fetchImpl(`${this.baseUrl}/api/chat`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ model: opts.model, messages, stream: true, options }),
+      body: JSON.stringify({ model: opts.model, messages, stream: true, options,
+        ...(toolsOffered ? { tools: opts.tools!.map((t) => ({
+          type: "function", function: { name: t.name, description: t.description, parameters: t.inputSchema },
+        })) } : {}),
+      }),
       signal: opts.signal,
     });
 
@@ -140,7 +148,7 @@ export class OllamaProvider implements Provider {
         if (!line) continue;
         if (opts.signal?.aborted) return;
 
-        let parsed: { message?: { content?: string }; done?: boolean; prompt_eval_count?: number; eval_count?: number };
+        let parsed: { message?: { content?: string; tool_calls?: OllamaToolCall[] }; done?: boolean; prompt_eval_count?: number; eval_count?: number };
         try {
           parsed = JSON.parse(line);
         } catch {
@@ -159,6 +167,14 @@ export class OllamaProvider implements Provider {
         if (typeof content === "string" && content.length > 0) {
           if (opts.signal?.aborted) return;
           yield { type: "delta", text: content };
+        }
+        if (toolsOffered) {
+          for (const call of parsed.message?.tool_calls ?? []) {
+            if (opts.signal?.aborted) return;
+            // Native arguments are already an object. Assign an absent id once
+            // for persistence, not for joining Ollama's positional history.
+            yield { type: "tool_call", id: call.id ?? crypto.randomUUID(), name: call.function.name, args: call.function.arguments };
+          }
         }
       }
       if (done) break;
