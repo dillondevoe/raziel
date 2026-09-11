@@ -207,8 +207,20 @@ async function main(): Promise<void> {
   // On a real TTY, readline intercepts Ctrl+C before process-level SIGINT ever fires.
   rl.on("SIGINT", () => { handleSigint(); if (!rlClosed) rl.prompt(); });
   rl.prompt();
+  // Attach the readline iterator NOW, before the first turn runs. Node's
+  // readline async iterator only buffers lines emitted after it exists; with
+  // --prompt-file the first turn is long, and a piped stdin ("/quit" + EOF)
+  // fires its line and close events during that turn. Attaching lazily lost
+  // both, and the process sat forever after the turn (observed 2026-09-11 on
+  // the first unattended ship: work done, commit made, no exit).
+  const rlIter = rl[Symbol.asyncIterator]();
   const liveLines = (async function* () {
-    for await (const line of rl) { yield String(line); if (!rlClosed) rl.prompt(); }
+    for (;;) {
+      const r = await rlIter.next();
+      if (r.done) return;
+      yield String(r.value);
+      if (!rlClosed) rl.prompt();
+    }
   })();
   // --prompt-file: the whole file is the first turn. Read up front so a
   // missing file fails the launch, not the first turn.
