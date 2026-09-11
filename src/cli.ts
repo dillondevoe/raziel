@@ -1,4 +1,5 @@
 import { createInterface } from "node:readline";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { Engine } from "./engine";
 import { SessionStore, razielHome } from "./session";
@@ -15,6 +16,7 @@ import { ApprovalManager } from "./approvals";
 import { wantsTui } from "./tui/surface";
 import { runTuiApp } from "./tui/app";
 import { createSessionCommand, createEscalateCommand, type ProfileBox, type StoreBox } from "./tui/session_cmd";
+import { parseLaunchFlags, type LaunchFlags } from "./launch";
 
 export { providerFor, createModelCommand } from "./commands";
 
@@ -55,6 +57,17 @@ export async function runRepl(opts: {
   }
 }
 
+/** Yields `prompt` as ONE input item, then everything from `live`. The plain
+ * REPL is line-based, so a multi-line task piped on stdin arrives as one turn
+ * per line (observed 2026-09-11: a six-paragraph mandate became five
+ * fragments and the model asked what was cut off). `--prompt-file` reads the
+ * file and feeds it through here, so a task is one turn however many lines it
+ * has; approvals and later turns still come from the live input, in order. */
+export async function* withLeadingPrompt(prompt: string, live: AsyncIterable<string>): AsyncGenerator<string> {
+  if (prompt.length > 0) yield prompt;
+  for await (const line of live) yield line;
+}
+
 function arg(name: string): string | undefined {
   const i = process.argv.indexOf(name);
   return i >= 0 ? process.argv[i + 1] : undefined;
@@ -93,6 +106,18 @@ async function main(): Promise<void> {
   const model = modelIsOverridden ? modelOverride : profile.model;
 
   const write = (s: string) => process.stdout.write(s);
+
+  // Headless launch surface (--grant / --allow-run / --max-rounds, or env). A
+  // malformed value is a failed launch, printed once, before any provider or
+  // session work -- never a run that silently denies everything.
+  let launch: LaunchFlags;
+  try {
+    launch = parseLaunchFlags(process.argv.slice(2), process.env);
+  } catch (err) {
+    process.stderr.write(`raziel: ${err instanceof Error ? err.message : String(err)}\n`);
+    process.exit(2);
+  }
+  if (launch.grant) write(sanitizeForTerminal(`raziel ▷ unattended — ${launch.grant.describe()}`) + "\n");
 
   const ws = new Workspace(process.cwd());
   const rulesPath = join(razielHome(), "rules.json");
@@ -146,7 +171,7 @@ async function main(): Promise<void> {
       return r.done ? undefined : r.value;
     },
   });
-  const approvals = new ApprovalManager(rules, { ask, write }, rulesPath);
+  const approvals = new ApprovalManager(rules, { ask, write }, rulesPath, launch.grant);
   const toolsFull = { registry: registryFull, ws, approvals };
   const toolsInitial = { registry: sliceTools(registryFull, profile.maxToolSurface), ws, approvals };
 
@@ -154,8 +179,8 @@ async function main(): Promise<void> {
     // `system` sits outside the model/profile union: a --model override
     // changes which model string goes out, not which profile the user
     // selected, so the selected profile's persona applies to both paths.
-    ? new Engine({ provider, store, model, system: loadSystemPrompt(profile), tools: toolsInitial })
-    : new Engine({ provider, store, profile, system: loadSystemPrompt(profile), tools: toolsInitial });
+    ? new Engine({ provider, store, model, system: loadSystemPrompt(profile), tools: toolsInitial, maxRounds: launch.maxRounds })
+    : new Engine({ provider, store, profile, system: loadSystemPrompt(profile), tools: toolsInitial, maxRounds: launch.maxRounds });
   const engineBox: { current: Engine } = { current: engine };
 
   if (process.stdout.isTTY) write(SIGIL);
@@ -165,11 +190,11 @@ async function main(): Promise<void> {
   // later /model or /escalate swap in the plain REPL too, not just the TUI.
   const storeBox: StoreBox = { current: store };
   const modelCmd = createModelCommand({
-    engineBox, store, storeBox, initialProfile: profile, write, tools: toolsFull,
+    engineBox, store, storeBox, initialProfile: profile, write, tools: toolsFull, maxRounds: launch.maxRounds,
     onSwap: (info) => { profileBox.current = info.profile; },
   });
   const approveCmd = createApproveCommand({ rules, rulesPath, write });
-  const sessionCmd = createSessionCommand({ engineBox, profileBox, storeBox, tools: toolsFull, write });
+  const sessionCmd = createSessionCommand({ engineBox, profileBox, storeBox, tools: toolsFull, write, maxRounds: launch.maxRounds });
   const escalateCmd = createEscalateCommand({ engineBox, profileBox, modelCmd, write });
   const onCommand = (line: string): "handled" | "not-command" =>
     modelCmd(line) === "handled" ? "handled"
@@ -182,9 +207,30 @@ async function main(): Promise<void> {
   // On a real TTY, readline intercepts Ctrl+C before process-level SIGINT ever fires.
   rl.on("SIGINT", () => { handleSigint(); if (!rlClosed) rl.prompt(); });
   rl.prompt();
-  inputIter = (async function* () {
-    for await (const line of rl) { yield String(line); if (!rlClosed) rl.prompt(); }
+  // Attach the readline iterator NOW, before the first turn runs. Node's
+  // readline async iterator only buffers lines emitted after it exists; with
+  // --prompt-file the first turn is long, and a piped stdin ("/quit" + EOF)
+  // fires its line and close events during that turn. Attaching lazily lost
+  // both, and the process sat forever after the turn (observed 2026-09-11 on
+  // the first unattended ship: work done, commit made, no exit).
+  const rlIter = rl[Symbol.asyncIterator]();
+  const liveLines = (async function* () {
+    for (;;) {
+      const r = await rlIter.next();
+      if (r.done) return;
+      yield String(r.value);
+      if (!rlClosed) rl.prompt();
+    }
   })();
+  // --prompt-file: the whole file is the first turn. Read up front so a
+  // missing file fails the launch, not the first turn.
+  const promptFile = arg("--prompt-file");
+  let leading = "";
+  if (promptFile !== undefined) {
+    try { leading = readFileSync(promptFile, "utf8").replace(/\s+$/, ""); }
+    catch (err) { process.stderr.write(`raziel: --prompt-file: ${err instanceof Error ? err.message : String(err)}\n`); process.exit(2); }
+  }
+  inputIter = withLeadingPrompt(leading, liveLines);
   await runRepl({ engine: engineBox, input: inputIter, write, signalRef, onCommand });
   rl.close();
 }

@@ -1,5 +1,5 @@
 import { test, expect, beforeEach } from "bun:test";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Engine } from "../src/engine";
@@ -115,6 +115,33 @@ test("single tool round: read_file executes, exact event sequence, tool_result c
   expect((replayed.at(-1) as any).stop).toBe("end");
   // tools were actually advertised to the provider
   expect((provider.toolsLog[0] as any[]).map((s: any) => s.name)).toContain("read_file");
+});
+
+test("write_file result is persisted when the consumer breaks on tool_result", async () => {
+  const store = new SessionStore("t-result-break");
+  const ws = mkws();
+  const registry = builtinTools();
+  const approvals = mkApprovals(async () => "allow");
+  const provider = new ScriptedToolProvider([
+    { toolCalls: [{ name: "write_file", args: { path: "x.txt", content: "hi" } }] },
+    { delta: ["done"] },
+  ]);
+  const eng = new Engine({ provider, store, model: "m", tools: { registry, ws, approvals } });
+
+  let result;
+  for await (const event of eng.send("write it")) {
+    if (event.type === "tool_result") {
+      result = event;
+      break;
+    }
+  }
+
+  expect(result).toBeDefined();
+  expect(result?.ok).toBe(true);
+  expect(readFileSync(join(ws.root, "x.txt"), "utf8")).toBe("hi");
+  const results = store.replay().filter((e) => e.type === "tool_result");
+  expect(results).toEqual([result!]);
+  expect(provider.calls).toHaveLength(1);
 });
 
 test("deny: tool never runs, tool_result says 'denied by user'", async () => {
@@ -340,4 +367,58 @@ test("[Important] abort mid-approval-wait: tool never runs even though decide() 
   const replayed = store.replay();
   expect(replayed.some((e) => e.type === "tool_result" && (e as any).ok === true)).toBe(false);
   expect((replayed.at(-1) as any).stop).toBe("interrupt");
+});
+
+// --- Geist gate 2026-09-11: round budget + answer pass ---------------------
+// Two asks from the model's side of the wire (gpt-6-astra reviewing this
+// harness through this harness): eight rounds cannot ship anything, and the
+// last round used to execute its tools and END with no reply -- the model
+// never got to say what it found. So: `maxRounds` is an Engine option, and
+// when the budget is spent the engine makes ONE more provider call with NO
+// tools offered, so the turn ends in prose. Tool calls a provider emits during
+// that answer pass are ignored, never executed: nothing was offered.
+test("maxRounds is honoured, and the spent budget ends in an answer pass with no tools offered", async () => {
+  const store = new SessionStore("t-rounds");
+  const ws = mkws();
+  writeFileSync(join(ws.root, "loop.txt"), "x");
+  const registry = builtinTools();
+  const approvals = mkApprovals(async () => "allow");
+  const provider = new ScriptedToolProvider([
+    { toolCalls: [{ name: "read_file", args: { path: "loop.txt" } }] },
+    { toolCalls: [{ name: "read_file", args: { path: "loop.txt" } }] },
+    { toolCalls: [{ name: "read_file", args: { path: "loop.txt" } }] },   // budget spent here (3rd round)
+    { delta: ["final answer"], toolCalls: [{ name: "read_file", args: { path: "loop.txt" } }] }, // the answer pass: prose + a stray call
+  ]);
+
+  const eng = new Engine({ provider, store, model: "m", tools: { registry, ws, approvals }, maxRounds: 3 });
+  await drain(eng.send("go"));
+
+  const replayed = store.replay();
+  expect(replayed.filter((e) => e.type === "tool_request").length).toBe(3);   // the stray 4th call was NOT executed
+  expect(provider.toolsLog).toHaveLength(4);                                    // 3 tool rounds + 1 answer pass
+  expect(provider.toolsLog[3]).toBeUndefined();                                 // ...with no tools offered
+  const errors = replayed.filter((e) => e.type === "error") as any[];
+  expect(errors.some((e) => e.message === "tool round limit")).toBe(true);
+  const asst = replayed.filter((e) => e.type === "assistant_message") as any[];
+  expect(asst.at(-1)?.text).toContain("final answer");
+  const last = replayed.at(-1) as any;
+  expect(last.type).toBe("turn_end");
+  expect(last.stop).toBe("end");
+});
+
+test("the answer pass sees the FULL tool history it just produced (round 2 uses the results)", async () => {
+  const store = new SessionStore("t-rounds-ctx");
+  const ws = mkws();
+  writeFileSync(join(ws.root, "a.txt"), "ALPHA");
+  const registry = builtinTools();
+  const approvals = mkApprovals(async () => "allow");
+  const provider = new ScriptedToolProvider([
+    { toolCalls: [{ name: "read_file", args: { path: "a.txt" } }] },
+    { delta: ["done"] },
+  ]);
+  const eng = new Engine({ provider, store, model: "m", tools: { registry, ws, approvals }, maxRounds: 1 });
+  await drain(eng.send("go"));
+  const answerCtx = provider.calls[1]!;
+  const tool = answerCtx.find((m) => m.role === "tool") as any;
+  expect(tool?.results?.[0]?.output).toContain("ALPHA");
 });

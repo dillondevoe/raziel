@@ -118,9 +118,14 @@ export async function* handleToolCall(
 
   const result = await execute(call, decision, decidedHash, tools);
   const tres = toolResult(turn, call.name, call.id, result.ok, result.output, round);
-  // The side effect has already happened. Yield BEFORE the append so a store failure cannot
-  // erase the result from the live stream; the append still throws and stops the turn.
-  yield tres;
-  tryAppend(tres);
+  // The side effect has already happened. Append BEFORE yielding so a consumer that
+  // stops at the result cannot skip its record and invite a repeat action on resume.
+  // Yield even if the append fails so the live stream still gets the result before
+  // the append error propagates and stops the turn.
+  try {
+    tryAppend(tres);
+  } finally {
+    yield tres;
+  }
   return { aborted: false };
 }

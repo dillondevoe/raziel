@@ -271,3 +271,72 @@ describe("buildCard", () => {
     expect(card.split("\n").filter((l) => l === "risk: high" || l === "risk: low").length).toBe(1);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Grant (per-launch headless authorization). Geist, 2026-09-11, Dillon's
+// direction "headless approval policy, let astra ship". A grant sits BEFORE
+// the ask: covered -> allow; present-but-not-covering -> deny with a reason
+// and the asker is never called (no human is there); critical -> deny as
+// always. Without a grant, behaviour is byte-identical to before.
+// ---------------------------------------------------------------------------
+import { parseGrant } from "../src/grant";
+
+describe("ApprovalManager with a grant", () => {
+  function mgr(grantSpec: string | undefined, allowRun: string[] = []) {
+    const asked: string[] = [];
+    const notes: string[] = [];
+    const deps: ApprovalDeps = {
+      ask: async (card) => { asked.push(card); return "allow"; },
+      write: (s) => { notes.push(s); },
+    };
+    const grant = grantSpec === undefined ? undefined : parseGrant(grantSpec, allowRun);
+    return { am: new ApprovalManager(Rules.load(mkRulesPath()), deps, mkRulesPath(), grant), asked, notes };
+  }
+
+  test("covered call allows without asking", async () => {
+    const { am, asked } = mgr("write");
+    const r = await am.decide("write_file", { path: "a.txt", content: "x" }, "medium", mkws());
+    expect(r.decision).toBe("allow");
+    expect(asked).toHaveLength(0);
+  });
+
+  test("uncovered call under a grant DENIES without asking, and says why", async () => {
+    const { am, asked, notes } = mgr("read");
+    const r = await am.decide("write_file", { path: "a.txt", content: "x" }, "medium", mkws());
+    expect(r.decision).toBe("deny");
+    expect(asked).toHaveLength(0);
+    expect(notes.join("")).toContain("outside grant");
+    expect(notes.join("")).toContain("write_file");
+  });
+
+  test("run_command allowed by argv prefix, denied outside it, never asked either way", async () => {
+    const { am, asked } = mgr("read", ["bun test"]);
+    expect((await am.decide("run_command", { argv: ["bun", "test"] }, "high", mkws())).decision).toBe("allow");
+    expect((await am.decide("run_command", { argv: ["git", "push"] }, "high", mkws())).decision).toBe("deny");
+    expect(asked).toHaveLength(0);
+  });
+
+  test("critical is denied under any grant", async () => {
+    const { am } = mgr("write,fetch", ["bun test"]);
+    expect((await am.decide("read_file", { path: "../../etc/passwd" }, "critical", mkws())).decision).toBe("deny");
+  });
+
+  test("a standing rule still allows under a grant (rules are not narrowed by a grant)", async () => {
+    const { am, asked } = mgr("read");
+    const path = mkRulesPath();
+    const rules = Rules.load(path);
+    rules.add({ tool: "write_file", pattern: '{"content":"*","path":"notes.md"}' });
+    const deps: ApprovalDeps = { ask: async () => { asked.push("x"); return "deny"; } };
+    const am2 = new ApprovalManager(rules, deps, path, parseGrant("read", []));
+    expect((await am2.decide("write_file", { path: "notes.md", content: "hi" }, "medium", mkws())).decision).toBe("allow");
+    expect(asked).toHaveLength(0);
+    void am;
+  });
+
+  test("no grant: unchanged -- the asker is consulted", async () => {
+    const { am, asked } = mgr(undefined);
+    const r = await am.decide("write_file", { path: "a.txt", content: "x" }, "medium", mkws());
+    expect(r.decision).toBe("allow");
+    expect(asked).toHaveLength(1);
+  });
+});
