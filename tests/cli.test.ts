@@ -547,3 +547,35 @@ test("(I4) a line arriving after a deny-timeout expires is not executed and is f
   await new Promise((r) => setTimeout(r, 80)); // let the late line actually arrive
   expect(out).toContain("input ignored");
 });
+
+// --- Geist 2026-09-11: --prompt-file delivers a MULTI-LINE task as ONE turn --
+// The plain REPL is line-based, so a task file piped on stdin became one turn
+// per line (observed live: a six-paragraph mandate arrived as five fragments,
+// the model asked what was cut off). `withLeadingPrompt` yields the file's
+// whole content as the first input item, then hands over to the live input.
+import { withLeadingPrompt } from "../src/cli";
+
+test("withLeadingPrompt yields the whole prompt first, verbatim, then the live lines", async () => {
+  async function* live() { yield "second"; yield "/quit"; }
+  const seen: string[] = [];
+  for await (const line of withLeadingPrompt("line one\nline two\n\nline four", live())) seen.push(line);
+  expect(seen).toEqual(["line one\nline two\n\nline four", "second", "/quit"]);
+});
+
+test("withLeadingPrompt with an empty prompt is a pass-through", async () => {
+  async function* live() { yield "only"; }
+  const seen: string[] = [];
+  for await (const line of withLeadingPrompt("", live())) seen.push(line);
+  expect(seen).toEqual(["only"]);
+});
+
+test("runRepl sends a multi-line leading prompt as ONE user turn", async () => {
+  const provider = new FakeProvider([["ok"]]);
+  const store = new SessionStore("cli-prompt-file");
+  const engine = new Engine({ provider, store, model: "m" });
+  async function* live() { yield "/quit"; }
+  await runRepl({ engine: { current: engine }, input: withLeadingPrompt("para one\n\npara two", live()), write: () => {} });
+  const users = store.replay().filter((e) => e.type === "user_message") as any[];
+  expect(users).toHaveLength(1);
+  expect(users[0].text).toBe("para one\n\npara two");
+});

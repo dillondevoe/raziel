@@ -1,4 +1,5 @@
 import { createInterface } from "node:readline";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { Engine } from "./engine";
 import { SessionStore, razielHome } from "./session";
@@ -54,6 +55,17 @@ export async function runRepl(opts: {
     }
     if (opts.signalRef) opts.signalRef.current = null;
   }
+}
+
+/** Yields `prompt` as ONE input item, then everything from `live`. The plain
+ * REPL is line-based, so a multi-line task piped on stdin arrives as one turn
+ * per line (observed 2026-09-11: a six-paragraph mandate became five
+ * fragments and the model asked what was cut off). `--prompt-file` reads the
+ * file and feeds it through here, so a task is one turn however many lines it
+ * has; approvals and later turns still come from the live input, in order. */
+export async function* withLeadingPrompt(prompt: string, live: AsyncIterable<string>): AsyncGenerator<string> {
+  if (prompt.length > 0) yield prompt;
+  for await (const line of live) yield line;
 }
 
 function arg(name: string): string | undefined {
@@ -195,9 +207,18 @@ async function main(): Promise<void> {
   // On a real TTY, readline intercepts Ctrl+C before process-level SIGINT ever fires.
   rl.on("SIGINT", () => { handleSigint(); if (!rlClosed) rl.prompt(); });
   rl.prompt();
-  inputIter = (async function* () {
+  const liveLines = (async function* () {
     for await (const line of rl) { yield String(line); if (!rlClosed) rl.prompt(); }
   })();
+  // --prompt-file: the whole file is the first turn. Read up front so a
+  // missing file fails the launch, not the first turn.
+  const promptFile = arg("--prompt-file");
+  let leading = "";
+  if (promptFile !== undefined) {
+    try { leading = readFileSync(promptFile, "utf8").replace(/\s+$/, ""); }
+    catch (err) { process.stderr.write(`raziel: --prompt-file: ${err instanceof Error ? err.message : String(err)}\n`); process.exit(2); }
+  }
+  inputIter = withLeadingPrompt(leading, liveLines);
   await runRepl({ engine: engineBox, input: inputIter, write, signalRef, onCommand });
   rl.close();
 }
