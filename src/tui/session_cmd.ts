@@ -47,6 +47,7 @@ export type SessionCommandDeps = {
   profileBox: ProfileBox;
   storeBox: StoreBox;
   tools?: ToolDeps;
+  maxRounds?: number;
   providerForFn?: typeof providerFor;
   write: (s: string) => void;
   /** Fires once per successful resume, after engineBox/storeBox are updated
@@ -102,7 +103,7 @@ export function createSessionCommand(deps: SessionCommandDeps): (line: string) =
             approvals: deps.tools.approvals,
           }
         : undefined;
-      engine = new Engine({ provider, store, profile: deps.profileBox.current, system: loadSystemPrompt(deps.profileBox.current), tools });
+      engine = new Engine({ provider, store, profile: deps.profileBox.current, system: loadSystemPrompt(deps.profileBox.current), tools, maxRounds: deps.maxRounds });
     } catch (err) {
       // Same UX as an unknown profile / missing-key provider error elsewhere:
       // one-line error, no swap, no crash.

@@ -85,13 +85,16 @@ for (const withTools of [false, true]) {
 
 test("each provider call in a bounded tool turn has one usage event, not one aggregate per send", async () => {
   await fixture(async (store, root) => {
-    const provider = new FakeProvider([], Array.from({ length: MAX_ROUNDS }, () => measured));
+    // MAX_ROUNDS tool rounds + the ANSWER PASS (no tools offered) once the
+    // budget is spent = MAX_ROUNDS + 1 provider calls, each metered once.
+    const CALLS = MAX_ROUNDS + 1;
+    const provider = new FakeProvider([], Array.from({ length: CALLS }, () => measured));
     provider.scriptTool("read_file", { path: "missing.txt" });
     const events = await drain(new Engine({ provider, store, model: "fixture", tools: tools(root) }));
-    expect(provider.calls).toHaveLength(MAX_ROUNDS);
+    expect(provider.calls).toHaveLength(CALLS);
     const usage = usageEvents(events);
-    expect(usage).toHaveLength(MAX_ROUNDS);
-    expect(new Set(usage.map((e) => e.id)).size).toBe(MAX_ROUNDS);
+    expect(usage).toHaveLength(CALLS);
+    expect(new Set(usage.map((e) => e.id)).size).toBe(CALLS);
     expect(new Set(usage.map((e) => e.turn)).size).toBe(1);
     expect(usageEvents(store.replay())).toEqual(usage);
   });

@@ -15,6 +15,7 @@ import { ApprovalManager } from "./approvals";
 import { wantsTui } from "./tui/surface";
 import { runTuiApp } from "./tui/app";
 import { createSessionCommand, createEscalateCommand, type ProfileBox, type StoreBox } from "./tui/session_cmd";
+import { parseLaunchFlags, type LaunchFlags } from "./launch";
 
 export { providerFor, createModelCommand } from "./commands";
 
@@ -94,6 +95,18 @@ async function main(): Promise<void> {
 
   const write = (s: string) => process.stdout.write(s);
 
+  // Headless launch surface (--grant / --allow-run / --max-rounds, or env). A
+  // malformed value is a failed launch, printed once, before any provider or
+  // session work -- never a run that silently denies everything.
+  let launch: LaunchFlags;
+  try {
+    launch = parseLaunchFlags(process.argv.slice(2), process.env);
+  } catch (err) {
+    process.stderr.write(`raziel: ${err instanceof Error ? err.message : String(err)}\n`);
+    process.exit(2);
+  }
+  if (launch.grant) write(sanitizeForTerminal(`raziel ▷ unattended — ${launch.grant.describe()}`) + "\n");
+
   const ws = new Workspace(process.cwd());
   const rulesPath = join(razielHome(), "rules.json");
   const rules = Rules.load(rulesPath);
@@ -146,7 +159,7 @@ async function main(): Promise<void> {
       return r.done ? undefined : r.value;
     },
   });
-  const approvals = new ApprovalManager(rules, { ask, write }, rulesPath);
+  const approvals = new ApprovalManager(rules, { ask, write }, rulesPath, launch.grant);
   const toolsFull = { registry: registryFull, ws, approvals };
   const toolsInitial = { registry: sliceTools(registryFull, profile.maxToolSurface), ws, approvals };
 
@@ -154,8 +167,8 @@ async function main(): Promise<void> {
     // `system` sits outside the model/profile union: a --model override
     // changes which model string goes out, not which profile the user
     // selected, so the selected profile's persona applies to both paths.
-    ? new Engine({ provider, store, model, system: loadSystemPrompt(profile), tools: toolsInitial })
-    : new Engine({ provider, store, profile, system: loadSystemPrompt(profile), tools: toolsInitial });
+    ? new Engine({ provider, store, model, system: loadSystemPrompt(profile), tools: toolsInitial, maxRounds: launch.maxRounds })
+    : new Engine({ provider, store, profile, system: loadSystemPrompt(profile), tools: toolsInitial, maxRounds: launch.maxRounds });
   const engineBox: { current: Engine } = { current: engine };
 
   if (process.stdout.isTTY) write(SIGIL);
@@ -165,11 +178,11 @@ async function main(): Promise<void> {
   // later /model or /escalate swap in the plain REPL too, not just the TUI.
   const storeBox: StoreBox = { current: store };
   const modelCmd = createModelCommand({
-    engineBox, store, storeBox, initialProfile: profile, write, tools: toolsFull,
+    engineBox, store, storeBox, initialProfile: profile, write, tools: toolsFull, maxRounds: launch.maxRounds,
     onSwap: (info) => { profileBox.current = info.profile; },
   });
   const approveCmd = createApproveCommand({ rules, rulesPath, write });
-  const sessionCmd = createSessionCommand({ engineBox, profileBox, storeBox, tools: toolsFull, write });
+  const sessionCmd = createSessionCommand({ engineBox, profileBox, storeBox, tools: toolsFull, write, maxRounds: launch.maxRounds });
   const escalateCmd = createEscalateCommand({ engineBox, profileBox, modelCmd, write });
   const onCommand = (line: string): "handled" | "not-command" =>
     modelCmd(line) === "handled" ? "handled"

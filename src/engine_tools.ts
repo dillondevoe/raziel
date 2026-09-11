@@ -28,6 +28,12 @@ export type RunToolTurnOpts = {
   onDelta(text: string): void;
   onUsage(usage: TokenUsage): SessionEvent;
   finish(stop: Stop): Iterable<EngineEvent>;
+  // Per-turn tool-round budget; defaults to MAX_ROUNDS. When it is spent the
+  // engine still makes ONE more provider call with NO tools offered -- the
+  // answer pass -- so the turn ends in prose instead of after a tool result
+  // the model never got to read back. Asked for from the model's side of the
+  // wire (gpt-6-astra reviewing this harness through it, 2026-09-11).
+  maxRounds?: number;
 };
 
 /** One provider.stream() round: yields assistant_delta events (via onDelta
@@ -52,7 +58,10 @@ async function* streamRound(
   let sawUsage = false;
 
   try {
-    for await (const chunk of provider.stream({ model, system, messages, signal, sampling, contextTokens, tools: toolSpecsArr })) {
+    // An EMPTY tool list goes out as `undefined`, not `[]`: the answer pass
+    // offers nothing, and "nothing offered" must look to every provider like a
+    // tool-less turn (some servers 400 on `tools: []`; ours gate on length).
+    for await (const chunk of provider.stream({ model, system, messages, signal, sampling, contextTokens, tools: toolSpecsArr.length > 0 ? toolSpecsArr : undefined })) {
       if (chunk.type === "done") { sawDone = true; continue; }
       if (signal?.aborted) { interrupted = true; break; }
       if (chunk.type === "usage" && !sawUsage) { sawUsage = true; yield onUsage(chunk.usage); }
@@ -80,10 +89,11 @@ async function* streamRound(
 export async function* runToolTurn(opts: RunToolTurnOpts): AsyncGenerator<EngineEvent> {
   const { provider, model, system, sampling, contextTokens, turn, signal, tools, getContext, tryAppend, onDelta, onUsage, finish } = opts;
   const specs = toolSpecs(tools.registry);
+  const maxRounds = opts.maxRounds ?? MAX_ROUNDS;
 
   let stop: Stop = "end";
 
-  for (let round = 0; round < MAX_ROUNDS; round++) {
+  for (let round = 0; round < maxRounds; round++) {
     if (signal?.aborted) { stop = "interrupt"; break; }
 
     const roundResult = yield* streamRound(
@@ -114,11 +124,31 @@ export async function* runToolTurn(opts: RunToolTurnOpts): AsyncGenerator<Engine
     }
     if (stop === "interrupt") break;
 
-    if (round === MAX_ROUNDS - 1) {
+    if (round === maxRounds - 1) {
       const e = mkEvent("error", { turn, message: "tool round limit" });
       tryAppend(e);
       yield e;
-      stop = "end";
+      // THE ANSWER PASS. The model has just received its last tool results and,
+      // before this existed, the turn ended right here -- it never got to say
+      // what it found. One more call, NO tools offered, so it must answer in
+      // prose. A provider that emits tool calls anyway (a fake, or a model
+      // ignoring an empty tool list) gets them dropped, not executed: nothing
+      // was offered, so nothing can be approved.
+      if (!signal?.aborted) {
+        const answer = yield* streamRound(
+          provider, model, system, sampling, contextTokens, getContext(), [], signal, turn, onDelta, onUsage,
+        );
+        if (answer.stop === "error") {
+          const err = mkEvent("error", { turn, message: answer.errMessage ?? "unknown error" });
+          tryAppend(err);
+          yield err;
+          stop = "error";
+        } else if (answer.stop === "interrupt") {
+          stop = "interrupt";
+        } else {
+          stop = "end";
+        }
+      }
       break;
     }
   }

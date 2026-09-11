@@ -105,6 +105,7 @@ export function createModelCommand(deps: {
   write: (s: string) => void;
   providerForFn?: typeof providerFor;
   tools?: ToolDeps;
+  maxRounds?: number; // carried across /model so a headless budget survives a swap
   onSwap?: (info: { profile: ModelProfile; providerName: string }) => void;
 }): (line: string) => "handled" | "not-command" {
   let current = deps.initialProfile;
@@ -142,7 +143,7 @@ export function createModelCommand(deps: {
     // The persona travels with the profile, so a swap into astra picks up
     // its systemFile and a swap out of it drops it — no retyping, and no
     // stale persona left over from the previous profile.
-    deps.engineBox.current = new Engine({ provider, store, profile: next, system: loadSystemPrompt(next), tools });
+    deps.engineBox.current = new Engine({ provider, store, profile: next, system: loadSystemPrompt(next), tools, maxRounds: deps.maxRounds });
     current = next;
     deps.write(statusLine(store, next.model, provider.name));
     deps.onSwap?.({ profile: next, providerName: provider.name });

@@ -4,7 +4,7 @@ import type { SessionStore } from "./session";
 import type { ModelProfile } from "./profiles";
 import { runToolTurn, type ToolDeps } from "./engine_tools";
 
-type EngineOpts = { provider: Provider; store: SessionStore; system?: string; tools?: ToolDeps }
+type EngineOpts = { provider: Provider; store: SessionStore; system?: string; tools?: ToolDeps; maxRounds?: number }
   & ({ model: string; profile?: never } | { model?: never; profile: ModelProfile });
 
 export class Engine {
@@ -15,12 +15,14 @@ export class Engine {
   private sampling?: { temperature?: number; topP?: number };
   private contextTokens?: number;
   private tools?: ToolDeps;
+  private maxRounds?: number;
 
   constructor(opts: EngineOpts) {
     this.provider = opts.provider;
     this.store = opts.store;
     this.system = opts.system;
     this.tools = opts.tools;
+    this.maxRounds = opts.maxRounds;
     if (opts.profile) {
       this.model = opts.profile.model;
       this.sampling = opts.profile.sampling;
@@ -194,6 +196,7 @@ export class Engine {
       if (tools) {
         yield* runToolTurn({
           provider, model, system, sampling, contextTokens, turn, tools,
+          maxRounds: this.maxRounds,
           signal: o?.signal,
           getContext: () => this.context(),
           // A missing audit record stops the turn before further tool work.

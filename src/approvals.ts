@@ -3,6 +3,7 @@ import { argsHash, canonicalJson } from "./tools/types";
 import type { RiskClass } from "./tools/types";
 import type { Workspace } from "./tools/workspace";
 import type { Rules } from "./rules";
+import type { Grant } from "./grant";
 
 function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null;
@@ -72,11 +73,17 @@ export class ApprovalManager {
   private rules: Rules;
   private deps: ApprovalDeps;
   private rulesPath: string;
+  // A per-launch grant (src/grant.ts). When present the run is UNATTENDED:
+  // covered -> allow, not covered -> deny with a reason, and `ask` is never
+  // reached -- a headless run that blocks on a prompt is a hung run. Standing
+  // rules still apply first for low/medium, unchanged; critical still denies.
+  private grant: Grant | undefined;
 
-  constructor(rules: Rules, deps: ApprovalDeps, rulesPath: string) {
+  constructor(rules: Rules, deps: ApprovalDeps, rulesPath: string, grant?: Grant) {
     this.rules = rules;
     this.deps = deps;
     this.rulesPath = rulesPath;
+    this.grant = grant;
   }
 
   async decide(
@@ -93,6 +100,14 @@ export class ApprovalManager {
 
     if ((risk === "low" || risk === "medium") && this.rules.matches(tool, args)) {
       return { decision: "allow", argsHash: hash };
+    }
+
+    if (this.grant) {
+      if (this.grant.covers(tool, args, risk)) return { decision: "allow", argsHash: hash };
+      this.deps.write?.(
+        sanitizeForTerminal(`denied: ${tool} (${risk}) is outside grant — ${this.grant.describe()}`) + "\n",
+      );
+      return { decision: "deny", argsHash: hash };
     }
 
     const card = buildCard(tool, args, risk, ws);
