@@ -160,3 +160,30 @@ test("Engine round 4 sees a stub, while persisted output and earlier provider vi
   expect(results(raw.calls[0]!)[0]!.output).toBe(big);
   expect(store.replay().find(e => e.type === "tool_result")?.output).toBe(big);
 });
+
+// Geist, after the live arm 2026-09-11: six big reads in ONE round of turn 1,
+// then a new user turn -- nothing evicted, because "the last two rounds" was
+// counted across the whole session and that single round was the newest.
+// Recency protects the CURRENT turn only: rounds after the newest user
+// message. Everything before it is history and eligible, oldest first.
+test("a previous turn's single big round is eligible once a new user turn begins; the current turn's last rounds stay protected", () => {
+  // exactly the live shape: one round in turn 1, a new user turn with NO rounds yet
+  const prev: ChatMessage[] = [{ role: "user", content: "read them" }, ...round(["p".repeat(20000)]), { role: "assistant", content: "6" }];
+  const noRounds = applyBudget([...prev, { role: "user", content: "next question" }], { contextTokens: 6000 });
+  expect(noRounds.evicted).toBe(1);
+  expect(results(noRounds.msgs)[0]!.output).toContain("[evicted from context: read_file");
+  // and with rounds in the new turn, only the new turn's last rounds are protected
+  const cur: ChatMessage[] = [{ role: "user", content: "next question" }, ...round(["q".repeat(6000)]), ...round(["r".repeat(6000)])];
+  const view = applyBudget([...prev, ...cur], { contextTokens: 12000 });
+  expect(results(view.msgs)[0]!.output).toContain("[evicted from context: read_file");
+  expect(results(view.msgs)[1]!.output).toBe("q".repeat(6000));
+  expect(results(view.msgs)[2]!.output).toBe("r".repeat(6000));
+});
+
+test("within a single turn the last two rounds are protected even when older rounds do not reach the target", () => {
+  const msgs: ChatMessage[] = [{ role: "user", content: "go" }, ...round(["a".repeat(9000)]), ...round(["b".repeat(9000)]), ...round(["c".repeat(9000)])];
+  const view = applyBudget(msgs, { contextTokens: 6000 });
+  expect(results(view.msgs)[0]!.output).toContain("[evicted");
+  expect(results(view.msgs)[1]!.output).toBe("b".repeat(9000));
+  expect(results(view.msgs)[2]!.output).toBe("c".repeat(9000));
+});

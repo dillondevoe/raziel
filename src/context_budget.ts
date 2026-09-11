@@ -24,14 +24,23 @@ export function applyBudget(
 
   const keepRecentRounds = Math.max(0, Math.floor(opts.keepRecentRounds ?? 2));
   const minEvictChars = opts.minEvictChars ?? 2000;
-  const rounds = msgs.filter(m => m.role === "assistant" && (m.toolCalls?.length ?? 0) > 0).length;
-  let round = 0;
+  // Recency is scoped to the CURRENT turn: only tool rounds after the newest
+  // user message can be "recent". Everything before it is history and is
+  // eligible oldest-first. (First cut counted rounds across the whole session,
+  // so a previous turn's single big round stayed protected forever -- observed
+  // live: six reads, 32k of context, a new turn, nothing evicted.)
+  let turnStart = msgs.length - 1;
+  while (turnStart > 0 && msgs[turnStart]!.role !== "user") turnStart--;
+  const isRound = (m: ChatMessage): boolean => m.role === "assistant" && (m.toolCalls?.length ?? 0) > 0;
+  const roundsInTurn = msgs.slice(turnStart).filter(isRound).length;
+  let round = 0; // counted within the current turn only
   let evicted = 0;
   let view = msgs;
   for (let mi = 0; mi < msgs.length && estimatedTokens > 0.5 * opts.contextTokens; mi++) {
     const m = msgs[mi]!;
-    if (m.role === "assistant" && (m.toolCalls?.length ?? 0) > 0) round++;
-    if (m.role !== "tool" || round > rounds - keepRecentRounds) continue;
+    if (mi >= turnStart && isRound(m)) round++;
+    if (m.role !== "tool") continue;
+    if (mi >= turnStart && round > roundsInTurn - keepRecentRounds) continue;
     const preceding = msgs[mi - 1];
     if (preceding?.role !== "assistant" || !preceding.toolCalls?.length) continue;
     const calls = preceding.toolCalls;
