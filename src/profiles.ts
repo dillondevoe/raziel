@@ -45,6 +45,16 @@ export type ModelProfile = {
 // p=0.50 (not "native is worse"), and n=20 cannot pass 19/20 (a sample
 // statement, not a verdict). Widen only after the native-only n=100/model
 // re-run with REFUSED split out of NO_CALL clears the model you want.
+//
+// ⚠ THE DOOR IS NOT YET OPEN (Saga, phase 1.6 inspection, 2026-09-11; verified by
+// the operator): as of 4d09d47 the ollama provider maps tool HISTORY into
+// /api/chat messages but does NOT send `tools` on the request and does NOT
+// parse `message.tool_calls` from the NDJSON stream. maxToolSurface: 6 is
+// therefore declared ahead of a working path — the exact defect the sprint rule
+// names. Augur's 20/20 was measured by his own probes, not through this
+// provider. The number stays only because four tests use it as the slicing
+// fixture; the fix is to open the path (declare + parse + live arm), tracked as
+// a sprint task, not to keep a surface nothing can reach.
 const REGISTRY: ModelProfile[] = [
   { id: "sonnet", provider: "anthropic", model: "claude-sonnet-5",
     contextTokens: 200_000, maxToolSurface: 24, parser: "native", streamingTools: true },
