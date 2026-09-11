@@ -1,5 +1,5 @@
 import { test, expect, beforeEach } from "bun:test";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Engine } from "../src/engine";
@@ -115,6 +115,33 @@ test("single tool round: read_file executes, exact event sequence, tool_result c
   expect((replayed.at(-1) as any).stop).toBe("end");
   // tools were actually advertised to the provider
   expect((provider.toolsLog[0] as any[]).map((s: any) => s.name)).toContain("read_file");
+});
+
+test("write_file result is persisted when the consumer breaks on tool_result", async () => {
+  const store = new SessionStore("t-result-break");
+  const ws = mkws();
+  const registry = builtinTools();
+  const approvals = mkApprovals(async () => "allow");
+  const provider = new ScriptedToolProvider([
+    { toolCalls: [{ name: "write_file", args: { path: "x.txt", content: "hi" } }] },
+    { delta: ["done"] },
+  ]);
+  const eng = new Engine({ provider, store, model: "m", tools: { registry, ws, approvals } });
+
+  let result;
+  for await (const event of eng.send("write it")) {
+    if (event.type === "tool_result") {
+      result = event;
+      break;
+    }
+  }
+
+  expect(result).toBeDefined();
+  expect(result?.ok).toBe(true);
+  expect(readFileSync(join(ws.root, "x.txt"), "utf8")).toBe("hi");
+  const results = store.replay().filter((e) => e.type === "tool_result");
+  expect(results).toEqual([result!]);
+  expect(provider.calls).toHaveLength(1);
 });
 
 test("deny: tool never runs, tool_result says 'denied by user'", async () => {
