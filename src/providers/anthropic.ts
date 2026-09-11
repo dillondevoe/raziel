@@ -136,6 +136,19 @@ export function fromClaudeCodeName(name: string, tools?: ToolSpec[]): string {
  * everywhere a tool name crosses outbound, and a declaration is not the only
  * place one does.
  */
+/** The Messages API requires `tool_use.id` to match ^[a-zA-Z0-9_-]+$ and be at
+ * most 64 characters. Ids in the log are whatever the ORIGINATING provider
+ * issued: anthropic's own `toolu_…` already fit; the Responses provider
+ * persists pi-ai's `${call_id}|${item_id}` -- a `|`, plus an fc_ item id that
+ * can run to hundreds of chars -- and /model or /session can bring such a
+ * session here. Applied to BOTH sides of the join so it cannot split them, and
+ * the cut keeps the head, which is where the unique call_id sits. pi-ai's own
+ * anthropic adapter does the same; this tree drives the SDK directly, so it
+ * inherited none of that. Idempotent on an id that already fits. */
+export function toAnthropicToolId(id: string): string {
+  return id.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 64);
+}
+
 export function toAnthropicMessages(
   messages: ChatMessage[],
   rename?: (name: string) => string,
@@ -150,7 +163,7 @@ export function toAnthropicMessages(
       for (const c of m.toolCalls ?? []) {
         blocks.push({
           type: "tool_use",
-          id: c.id,
+          id: toAnthropicToolId(c.id),
           name: rename ? rename(c.name) : c.name,
           input: (c.args ?? {}) as Record<string, unknown>,
         });
@@ -164,8 +177,13 @@ export function toAnthropicMessages(
         role: "user",
         content: m.results.map((r): Anthropic.ToolResultBlockParam => ({
           type: "tool_result",
-          tool_use_id: r.id,
-          content: r.output,
+          tool_use_id: toAnthropicToolId(r.id),
+          // grep with no matches and read_file on an empty file both return
+          // ok:true with "". An empty text BLOCK is rejected by the API; an
+          // empty STRING here was not confirmed either way, and a persisted
+          // tool round that 400s poisons every later turn of the session, so
+          // send a stated absence -- which is also true, and more useful.
+          content: r.output.length > 0 ? r.output : "(no output)",
           is_error: !r.ok,
         })),
       });

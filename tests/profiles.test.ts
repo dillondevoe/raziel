@@ -56,3 +56,10 @@ test("registry entries are frozen — a caller can't mutate the live objects (M9
 
   expect(() => { (listProfiles() as any).push({}); }).toThrow();
 });
+
+// Geist gate 2026-09-10: the persona travels with the MODEL, not the door. A
+// /model astra -> astra-agent swap dropped it silently before this arm existed.
+test("astra-agent carries the same persona file as astra", () => {
+  expect(getProfile("astra-agent")?.systemFile).toBeDefined();
+  expect(getProfile("astra-agent")?.systemFile).toBe(getProfile("astra")!.systemFile);
+});

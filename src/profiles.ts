@@ -11,7 +11,9 @@ export type ModelProfile = {
   sampling?: { temperature?: number; topP?: number };
   streamingTools: boolean; // carried for M1b
   escalateTo?: string; // profile id offered on local punt (M1c UX)
-  // Env var holding this profile's API key. openai-compat ONLY, and its
+  // Env var holding this profile's API key. The two pi-ai-backed providers
+  // (openai-compat, openai-responses) honour it -- anthropic and ollama do
+  // not read it -- and its
   // absence is meaningful: a profile WITHOUT it is a keyless endpoint
   // (Ollama/vLLM/LM Studio) and gets the provider's keyless placeholder; a
   // profile WITH it is refused at construction when the var is unset,
@@ -77,9 +79,17 @@ const REGISTRY: ModelProfile[] = [
   // package.json through Responses and the content came back. The addendum's
   // rule -- a profile advertising a capability with no working path is a defect --
   // is satisfied by that run, and by nothing weaker.
+  //
+  // systemFile is the SAME file as `astra`: the persona is a property of the
+  // model the operator talks to, not of which door the request goes through.
+  // Without it a /model astra -> astra-agent swap dropped the persona silently
+  // (loadSystemPrompt returns undefined with no warning when no file is
+  // declared), which presents as personality drift between two profiles of one
+  // model (review, Geist gate 2026-09-10).
   { id: "astra-agent", provider: "openai-responses", model: "gpt-6-astra",
     baseUrl: "https://api.openai.com/v1", contextTokens: 32_768, maxToolSurface: 7,
-    parser: "native", streamingTools: true, apiKeyEnv: "RAZIEL_COMPAT_KEY" },
+    parser: "native", streamingTools: true, apiKeyEnv: "RAZIEL_COMPAT_KEY",
+    systemFile: "profiles/astra.md" },
 ];
 // Freeze every entry (+ its sampling sub-object) and the registry array
 // itself, so callers can't mutate the registry's live objects out from

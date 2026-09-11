@@ -223,10 +223,11 @@ test("openai-responses keeps text-only requests tool-free and abort suppresses b
 });
 
 // --- factory ---------------------------------------------------------------
-// The registry deliberately carries NO openai-responses entry yet: per the
-// sprint rule, a profile that advertises a tool surface earns it only once a
-// live arm has executed a real tool call. The factory branch is still a working
-// path and is exercised here on a fixture profile, so it is not dead code.
+// The registry carries ONE openai-responses entry, `astra-agent` (asserted
+// below), earned by the live read_file arm of 2026-09-10 per the sprint rule
+// that a profile advertises a tool surface only once a real tool call has run
+// through it. The factory branch is exercised here on a fixture profile as
+// well, so a change to the shipping profile cannot mask a factory regression.
 const responsesFixture: ModelProfile = {
   id: "responses-agent", provider: "openai-responses", model: "test-model",
   baseUrl: "http://127.0.0.1/v1", contextTokens: 32_768, maxToolSurface: 7,

@@ -215,6 +215,45 @@ test("anthropic: assistant prose survives alongside its tool calls", () => {
   expect((out[0]! as any).content.map((b: any) => b.type)).toEqual(["text", "tool_use"]);
 });
 
+// Geist gate 2026-09-10 (review, CONFIRMED by a verifier against pi-ai's own
+// anthropic adapter, which normalizes for exactly this). The Messages API
+// requires tool_use.id to match ^[a-zA-Z0-9_-]+$ and be at most 64 chars. The
+// Responses provider persists pi-ai's composite `${call_id}|${item_id}` -- a
+// `|`, and an fc_ item id that can run to 400 chars -- and /model or /session
+// can carry a session recorded under astra-agent into sonnet. Every later
+// request then 400s with no hint that the persisted ids are the cause.
+// Normalization must hit BOTH sides of the join identically.
+test("anthropic: a Responses-shaped composite id is normalized to the API's pattern on both sides of the join", () => {
+  const raw = "call_abc123|fc_" + "x".repeat(400) + "+/=";
+  const out = toAnthropicMessages([
+    { role: "assistant", content: "", toolCalls: [{ id: raw, name: "read_file", args: {} }] },
+    { role: "tool", results: [{ id: raw, name: "read_file", ok: true, output: "A" }] },
+  ]);
+  const use = (out[0]! as any).content[0];
+  const res = (out[1]! as any).content[0];
+  expect(use.id).toMatch(/^[a-zA-Z0-9_-]{1,64}$/);
+  expect(use.id.startsWith("call_abc123")).toBe(true);   // the unique half survives the cut
+  expect(res.tool_use_id).toBe(use.id);
+});
+
+test("anthropic: an id that already fits the pattern is passed through unchanged", () => {
+  const out = toAnthropicMessages([{ role: "assistant", content: "", toolCalls: [{ id: "toolu_01ABC", name: "t", args: {} }] }]);
+  expect((out[0]! as any).content[0].id).toBe("toolu_01ABC");
+});
+
+// grep with zero matches and read_file on an empty file both return ok:true with
+// output "". The verifier could not confirm the API rejects an empty STRING
+// tool_result.content (it does reject an empty text BLOCK); the substitution is
+// cheap, tells the model something true, and removes the one case where a
+// persisted tool round could poison every later turn of an anthropic session.
+test("anthropic: an empty tool output is sent as a stated absence, never as an empty string", () => {
+  const out = toAnthropicMessages([
+    { role: "assistant", content: "", toolCalls: [{ id: "c1", name: "grep", args: {} }] },
+    { role: "tool", results: [{ id: "c1", name: "grep", ok: true, output: "" }] },
+  ]);
+  expect((out[1]! as any).content[0].content).toBe("(no output)");
+});
+
 // ---------------------------------------------------------------------------
 // (6) openai-responses mapping: one tool message EXPANDS to N pi-ai messages.
 // ---------------------------------------------------------------------------
