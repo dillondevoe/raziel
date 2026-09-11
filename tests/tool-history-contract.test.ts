@@ -31,13 +31,13 @@ class Scripted implements Provider {
   readonly name = "scripted";
   calls: ChatMessage[][] = [];
   private i = 0;
-  constructor(private rounds: { delta?: string[]; toolCalls?: { name: string; args: unknown }[] }[]) {}
+  constructor(private rounds: { delta?: string[]; toolCalls?: { id?: string; name: string; args: unknown }[] }[]) {}
   async *stream(opts: { messages: ChatMessage[]; signal?: AbortSignal } & Record<string, any>): AsyncIterable<StreamChunk> {
     this.calls.push(opts.messages);
     const round = this.rounds[Math.min(this.i, this.rounds.length - 1)]!;
     this.i++;
     for (const t of round.delta ?? []) yield { type: "delta", text: t };
-    for (const tc of round.toolCalls ?? []) yield { type: "tool_call", id: crypto.randomUUID(), name: tc.name, args: tc.args };
+    for (const tc of round.toolCalls ?? []) yield { type: "tool_call", id: tc.id ?? crypto.randomUUID(), name: tc.name, args: tc.args };
     yield { type: "done", stopReason: "end" };
   }
 }
@@ -393,4 +393,79 @@ test("a result line dropped by replay still occupies its slot -- no rotation, no
   const toolMsgs = wire.filter((m) => m.role === "tool");
   expect(toolMsgs).toHaveLength(3);
   expect(toolMsgs[1]!.content).not.toContain("333");
+});
+
+// ---------------------------------------------------------------------------
+// (10) Geist gate 2026-09-10 -- two review angles independently found this.
+// requestId is the PROVIDER's tool-call id, unique per response at best; several
+// openai-compat servers and local tool parsers emit per-response counters
+// (call_0, call_1) that restart every round. A result map keyed by bare
+// requestId across the whole log is last-write-wins, so round 0's call was
+// answered with round 1's output -- a fabricated transcript, well-formed on
+// every wire, the exact class this contract exists to end. Pairing is by LOG
+// POSITION: a result answers the nearest preceding unanswered request with
+// its id.
+// ---------------------------------------------------------------------------
+test("colliding request ids across rounds pair by log position, not last-write-wins", async () => {
+  const store = new SessionStore("thc-10");
+  const ws = mkws();
+  writeFileSync(join(ws.root, "a.txt"), "111");
+  writeFileSync(join(ws.root, "b.txt"), "222");
+  const deps = { registry: builtinTools(), ws, approvals: mkApprovals(async () => "allow") };
+
+  const p1 = new Scripted([
+    { toolCalls: [{ id: "call_0", name: "read_file", args: { path: "a.txt" } }] },
+    { toolCalls: [{ id: "call_0", name: "read_file", args: { path: "b.txt" } }] },
+    { delta: ["ok"] },
+  ]);
+  await drain(new Engine({ provider: p1, store, model: "m", tools: deps }).send("read both"));
+
+  const p2 = new Scripted([{ delta: ["done"] }]);
+  await drain(new Engine({ provider: p2, store: new SessionStore("thc-10"), model: "m", tools: deps }).send("again"));
+
+  const tools = p2.calls[0]!.filter((m) => m.role === "tool") as Extract<ChatMessage, { role: "tool" }>[];
+  expect(tools).toHaveLength(2);
+  expect(tools[0]!.results[0]!.output).toContain("111");
+  expect(tools[0]!.results[0]!.output).not.toContain("222");
+  expect(tools[1]!.results[0]!.output).toContain("222");
+});
+
+// ---------------------------------------------------------------------------
+// (11) The mirror of arm (9): the REQUEST line is the one lost, the result line
+// is intact. Pairing only what a surviving request reaches would drop the
+// result silently -- and a dropped write_file/run_command result is the model
+// losing the evidence that a side effect already happened, then doing it
+// again. The old pre-contract replay at least kept the output visible. An
+// orphan cannot be replayed as an assistant call (no record of one was made --
+// inventing it is the fabrication this contract forbids), so it replays as a
+// user-role note that says exactly what it is.
+// ---------------------------------------------------------------------------
+test("a tool_result whose request line was lost still reaches the transcript, marked as recovered", async () => {
+  const store = new SessionStore("thc-11");
+  const ws = mkws();
+  writeFileSync(join(ws.root, "a.txt"), "111");
+  const deps = { registry: builtinTools(), ws, approvals: mkApprovals(async () => "allow") };
+
+  const p1 = new Scripted([{ toolCalls: [{ name: "read_file", args: { path: "a.txt" } }] }, { delta: ["ok"] }]);
+  await drain(new Engine({ provider: p1, store, model: "m", tools: deps }).send("read it"));
+
+  const lines = readFileSync(store.path, "utf8").split("\n").filter((l) => l.length > 0);
+  let hit = 0;
+  const patched = lines.map((l) => {
+    const o = JSON.parse(l) as Record<string, unknown>;
+    if (o.type === "tool_request") { hit++; return JSON.stringify({ ...o, argsHash: 7 }); } // still JSON, rejected by isValidEvent
+    return l;
+  });
+  expect(hit).toBe(1);
+  writeFileSync(store.path, patched.join("\n") + "\n");
+
+  const p2 = new Scripted([{ delta: ["done"] }]);
+  await drain(new Engine({ provider: p2, store: new SessionStore("thc-11"), model: "m", tools: deps }).send("again"));
+
+  const msgs = p2.calls[0]!;
+  expect(msgs.find((m) => m.role === "tool")).toBeUndefined();          // no request survived: nothing to pair
+  expect(msgs.find((m) => m.role === "assistant" && (m as any).toolCalls?.length)).toBeUndefined(); // and no call is invented
+  const note = msgs.find((m) => m.role === "user" && m.content.includes("111"));
+  expect(note).toBeDefined();
+  expect((note as any).content).toContain("recovered tool_result read_file");
 });
