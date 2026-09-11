@@ -194,29 +194,29 @@ export function toAnthropicMessages(
 
 const EPHEMERAL = { type: "ephemeral" as const };
 
-/** Find the turn boundary in ChatMessage roles, before mapping: Anthropic maps
- * tool results to user messages, which are NOT new user turns. Mapping the two
- * sides separately also handles omitted empty assistant messages correctly.
+/** Mark the LAST content block of the LAST message as the third breakpoint.
+ * The cached prefix must GROW with the conversation: inside a tool turn every
+ * round appends a tool_use/tool_result pair, and a breakpoint pinned before the
+ * newest user message (the first cut of this function, Geist's own spec) left
+ * every one of those rounds uncached until the next turn. Marking the tail
+ * lets each round read the previous round's prefix; Anthropic's lookup also
+ * walks back from a breakpoint, so a moved breakpoint still hits the old one.
  * All cache metadata belongs to fresh wire objects, never the source log.
  */
 function cacheableMessages(messages: ChatMessage[], rename?: (name: string) => string): Anthropic.MessageParam[] {
-  let newestUser = messages.length - 1;
-  while (newestUser >= 0 && messages[newestUser]!.role !== "user") newestUser--;
-  if (newestUser <= 0) return toAnthropicMessages(messages, rename);
-  const prefix = toAnthropicMessages(messages.slice(0, newestUser), rename);
-  const last = prefix.at(-1);
-  if (last) {
-    if (typeof last.content === "string") {
-      if (last.content.length > 0) last.content = [{ type: "text", text: last.content, cache_control: EPHEMERAL }];
-    } else {
-      const block = last.content.at(-1);
-      // These are exactly the block kinds emitted by toAnthropicMessages.
-      if (block && (block.type === "text" || block.type === "tool_use" || block.type === "tool_result")) {
-        last.content[last.content.length - 1] = { ...block, cache_control: EPHEMERAL };
-      }
+  const mapped = toAnthropicMessages(messages, rename);
+  const last = mapped.at(-1);
+  if (!last) return mapped;
+  if (typeof last.content === "string") {
+    if (last.content.length > 0) last.content = [{ type: "text", text: last.content, cache_control: EPHEMERAL }];
+  } else {
+    const block = last.content.at(-1);
+    // These are exactly the block kinds emitted by toAnthropicMessages.
+    if (block && (block.type === "text" || block.type === "tool_use" || block.type === "tool_result")) {
+      last.content[last.content.length - 1] = { ...block, cache_control: EPHEMERAL };
     }
   }
-  return [...prefix, ...toAnthropicMessages(messages.slice(newestUser), rename)];
+  return mapped;
 }
 
 export class AnthropicProvider implements Provider {
