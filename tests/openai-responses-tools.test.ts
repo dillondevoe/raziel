@@ -90,6 +90,63 @@ test("openai-responses reads arguments delivered whole on the added item, with n
   });
 });
 
+// Geist gate 2026-09-10, three arms from the review's confirmed race. pi-ai's
+// EventStream is a queue and its producer mutates `partialJson` on the SAME
+// block object the queued toolcall_start points at -- so anything read from
+// the partial message at consume time is whatever the buffer holds THEN, not
+// what it held at push time. The three shapes that broke:
+//   (a) a call that arrives ONLY as output_item.done: pi-ai creates the slot,
+//       deletes the scratch buffer and queues toolcall_end in one synchronous
+//       handler, before the consumer runs once -> the seed read undefined ->
+//       read_file with {} -- a silent wrong call, deterministic;
+//   (b) a SLOW consumer: deltas already appended to the buffer by the time
+//       toolcall_start is consumed, then appended again -> doubled JSON;
+//   (c) the server REVISES its arguments (function_call_arguments.done is not
+//       a prefix-extension of the deltas): pi-ai emits no delta, the
+//       accumulator keeps the superseded text -- the file's own stated limit.
+// The authoritative string is the one the server puts on output_item.done,
+// and the provider now reads it off the wire itself.
+test("openai-responses (a) reads arguments from a call delivered ONLY as output_item.done", async () => {
+  await fixture(() => reply(
+    ev("response.output_item.done", { output_index: 0, item: { ...fnItem("call-0", "read_file", '{"path":"only-in-done.txt"}'), status: "completed" } }),
+  ), async (p) => {
+    const calls: StreamChunk[] = [];
+    for await (const c of p.stream({ model: "test", messages: [], tools: [readSpec] })) if (c.type === "tool_call") calls.push(c);
+    expect(calls).toEqual([{ type: "tool_call", id: "call-0|item-call-0", name: "read_file", args: { path: "only-in-done.txt" } }]);
+  });
+});
+
+test("openai-responses (b) a slow consumer does not double-count a seeded prefix", async () => {
+  await fixture(() => reply(
+    ev("response.output_item.added", { output_index: 0, item: { type: "message", id: "msg-1", role: "assistant", status: "in_progress", content: [] } }) +
+    ev("response.output_text.delta", { output_index: 0, content_index: 0, delta: "Reading" }) +
+    ev("response.output_item.added", { output_index: 1, item: fnItem("call-0", "read_file", '{"path":"') }) +
+    ev("response.function_call_arguments.delta", { output_index: 1, delta: "seed" }) +
+    ev("response.function_call_arguments.delta", { output_index: 1, delta: '.txt"}' }) +
+    ev("response.output_item.done", { output_index: 1, item: { ...fnItem("call-0", "read_file", '{"path":"seed.txt"}'), status: "completed" } }),
+  ), async (p) => {
+    const calls: StreamChunk[] = [];
+    for await (const c of p.stream({ model: "test", messages: [], tools: [readSpec] })) {
+      await Bun.sleep(40); // the engine/TUI doing work between chunks
+      if (c.type === "tool_call") calls.push(c);
+    }
+    expect(calls).toEqual([{ type: "tool_call", id: "call-0|item-call-0", name: "read_file", args: { path: "seed.txt" } }]);
+  });
+});
+
+test("openai-responses (c) a server that revises its arguments mid-stream is read at its final word", async () => {
+  await fixture(() => reply(
+    ev("response.output_item.added", { output_index: 0, item: fnItem("call-0", "read_file") }) +
+    ev("response.function_call_arguments.delta", { output_index: 0, delta: '{"path":"draft' }) +
+    ev("response.function_call_arguments.done", { output_index: 0, item_id: "item-call-0", arguments: '{"path":"final.txt"}' }) +
+    ev("response.output_item.done", { output_index: 0, item: { ...fnItem("call-0", "read_file", '{"path":"final.txt"}'), status: "completed" } }),
+  ), async (p) => {
+    const calls: StreamChunk[] = [];
+    for await (const c of p.stream({ model: "test", messages: [], tools: [readSpec] })) if (c.type === "tool_call") calls.push(c);
+    expect(calls).toEqual([{ type: "tool_call", id: "call-0|item-call-0", name: "read_file", args: { path: "final.txt" } }]);
+  });
+});
+
 test("openai-responses treats empty arguments as a zero-arg call ({}), like the anthropic provider", async () => {
   await fixture(() => reply(
     ev("response.output_item.added", { output_index: 0, item: fnItem("call-0", "read_file") }) +

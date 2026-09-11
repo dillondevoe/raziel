@@ -97,29 +97,80 @@ export function toPiMessages(m: ChatMessage, model: string): Message[] {
   }));
 }
 
-// The Responses adapter seeds a tool call's raw-argument buffer at
-// `response.output_item.added` time (openai-responses-shared.js createSlot:
-// `partialJson: item.arguments || ""`) and pushes NO toolcall_delta for that
-// seed. Accumulating deltas alone therefore drops any prefix the server sent
-// on the added item — including the whole argument string when a call arrives
-// complete in one item, which is what `response.output_item.done` produces for
-// a call that never streamed. That prefix is not on the event's own fields; it
-// is on the partial AssistantMessage's tool-call block, in a scratch property
-// pi-ai deletes on finalize and does not expose in its public ToolCall type.
-// Hence the cast — narrow, read-only, and the reason it exists is this comment.
-function seedOf(ev: Extract<AssistantMessageEvent, { type: "toolcall_start" }>): string {
-  const block = ev.partial.content[ev.contentIndex] as { partialJson?: unknown } | undefined;
-  return typeof block?.partialJson === "string" ? block.partialJson : "";
+// THE RAW ARGUMENT STRING IS READ OFF THE WIRE, NOT OFF pi-ai's PARTIAL MESSAGE.
+//
+// pi-ai's EventStream is a queue, and its producer mutates the tool-call block
+// the queued events point at: `partialJson += delta` on every arguments delta,
+// `delete partialJson` right before it queues toolcall_end. So anything read
+// from `ev.partial` at CONSUME time is whatever the buffer holds then, not what
+// it held when the event was pushed. The first version of this file seeded its
+// accumulator that way and the review reproduced three breaks (all armed in
+// tests/openai-responses-tools.test.ts): a call delivered only as
+// output_item.done read `undefined` and ran read_file with {} -- deterministic,
+// silent, wrong; a slow consumer read seed+deltas then appended the deltas
+// again; and a server that revised its arguments left the accumulator holding
+// the superseded text, which the old comment had filed as a "stated limit".
+//
+// The one string that is authoritative is the `arguments` the server puts on
+// `response.output_item.done` -- final, complete, and exactly what the model
+// emitted. pi-ai parses it with a lenient repairing parser and discards the
+// raw text, but it lets the caller supply `fetch`. So the SDK's fetch is
+// wrapped with a pass-through TransformStream that watches the SSE frames as
+// they go by and records that string per call, keyed the way pi-ai keys the
+// call (`${call_id}|${item.id}`). The transform runs on the bytes BEFORE the
+// SDK's parser sees them, so by the time toolcall_end reaches this loop the
+// entry exists -- ordering by construction, not by consumer speed. The delta
+// accumulator stays as the fallback for a server that omits `arguments` on
+// the done item, and it no longer carries a seed, so a slow consumer can no
+// longer double anything.
+type RawArgs = Map<string, string>;
+
+function tapRawArguments(body: ReadableStream<Uint8Array>, sink: RawArgs): ReadableStream<Uint8Array> {
+  const dec = new TextDecoder();
+  let buf = "";
+  const scan = (line: string): void => {
+    if (!line.startsWith("data:")) return;
+    const payload = line.slice(5).trim();
+    if (payload === "" || payload === "[DONE]") return;
+    let ev: unknown;
+    try { ev = JSON.parse(payload); } catch { return; } // not ours to validate; the SDK will
+    const e = ev as { type?: unknown; item?: { type?: unknown; call_id?: unknown; id?: unknown; arguments?: unknown } };
+    if (e.type !== "response.output_item.done" || e.item?.type !== "function_call") return;
+    if (typeof e.item.arguments !== "string") return;
+    sink.set(`${e.item.call_id}|${e.item.id}`, e.item.arguments);
+  };
+  return body.pipeThrough(new TransformStream<Uint8Array, Uint8Array>({
+    transform(chunk, ctl) {
+      buf += dec.decode(chunk, { stream: true });
+      let nl: number;
+      while ((nl = buf.indexOf("\n")) >= 0) {
+        scan(buf.slice(0, nl).replace(/\r$/, ""));
+        buf = buf.slice(nl + 1);
+      }
+      ctl.enqueue(chunk);
+    },
+    flush() { if (buf.length > 0) scan(buf); },
+  }));
+}
+
+function tappingFetch(sink: RawArgs, base: typeof fetch): typeof fetch {
+  return (async (input, init) => {
+    const res = await base(input, init);
+    if (!res.body || !(res.headers.get("content-type") ?? "").includes("text/event-stream")) return res;
+    return new Response(tapRawArguments(res.body, sink), { status: res.status, statusText: res.statusText, headers: res.headers });
+  }) as typeof fetch;
 }
 
 export class OpenAIResponsesProvider implements Provider {
   readonly name = PROVIDER_ID;
   private baseUrl: string;
   private apiKey?: string;
+  private fetchImpl: typeof fetch;
 
-  constructor(opts: { baseUrl: string; apiKey?: string }) {
+  constructor(opts: { baseUrl: string; apiKey?: string; fetchImpl?: typeof fetch }) {
     this.baseUrl = opts.baseUrl;
     this.apiKey = opts.apiKey;
+    this.fetchImpl = opts.fetchImpl ?? fetch;
   }
 
   async *stream(opts: {
@@ -163,8 +214,10 @@ export class OpenAIResponsesProvider implements Provider {
     const samplingParams: Record<string, unknown> = {};
     if (opts.sampling?.topP !== undefined) samplingParams.top_p = opts.sampling.topP;
 
+    const rawArgs: RawArgs = new Map();
     const events = openaiResponsesStream(model, context, {
       apiKey: this.apiKey ?? KEYLESS_API_KEY,
+      fetch: tappingFetch(rawArgs, this.fetchImpl),
       signal: opts.signal,
       temperature: opts.sampling?.temperature,
       maxTokens: DEFAULT_MAX_TOKENS,
@@ -175,16 +228,9 @@ export class OpenAIResponsesProvider implements Provider {
     // (parseStreamingJson), which recovers truncated JSON into a plausible
     // object. A harness that hands tools real filesystem paths must not act on
     // a recovered guess, so the raw text is re-parsed strictly here and the
-    // finalized `ev.toolCall.arguments` is never read.
-    //
-    // STATED LIMIT, not an oversight: response.function_call_arguments.done
-    // replaces the adapter's buffer wholesale but emits a delta ONLY when the
-    // final string starts with what was already accumulated. A server that
-    // REVISED its arguments mid-stream would therefore leave this accumulator
-    // holding the superseded text, with nothing on any event distinguishing
-    // that from a normal stream. The failure is loud in the common case (the
-    // stale text is usually truncated, so it throws) but not guaranteed to be.
-    // Closing it needs a raw-argument field pi-ai does not surface.
+    // finalized `ev.toolCall.arguments` is never read. The raw text comes from
+    // `rawArgs` (the wire tap above); `toolArgs` accumulates deltas as the
+    // fallback for a done item that carries no `arguments` string.
     const toolArgs = new Map<number, string>();
     // Tool events are only meaningful when the caller offered tools; a text-only
     // turn carrying a stray tool call must not lose its text to a strict throw.
@@ -193,7 +239,7 @@ export class OpenAIResponsesProvider implements Provider {
       if (opts.signal?.aborted) return;
       if (!toolsOffered && (ev.type === "toolcall_start" || ev.type === "toolcall_delta" || ev.type === "toolcall_end")) continue;
       if (ev.type === "toolcall_start") {
-        toolArgs.set(ev.contentIndex, seedOf(ev));
+        toolArgs.set(ev.contentIndex, "");
         continue;
       }
       if (ev.type === "toolcall_delta") {
@@ -203,8 +249,10 @@ export class OpenAIResponsesProvider implements Provider {
         continue;
       }
       if (ev.type === "toolcall_end") {
-        const raw = toolArgs.get(ev.contentIndex);
+        const streamed = toolArgs.get(ev.contentIndex);
         toolArgs.delete(ev.contentIndex);
+        // Wire string first; deltas only if the done item carried none.
+        const raw = rawArgs.get(ev.toolCall.id) ?? streamed;
         let args: unknown;
         try {
           if (raw === undefined) throw new Error("missing start");
