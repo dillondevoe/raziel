@@ -192,6 +192,33 @@ export function toAnthropicMessages(
   return out;
 }
 
+const EPHEMERAL = { type: "ephemeral" as const };
+
+/** Find the turn boundary in ChatMessage roles, before mapping: Anthropic maps
+ * tool results to user messages, which are NOT new user turns. Mapping the two
+ * sides separately also handles omitted empty assistant messages correctly.
+ * All cache metadata belongs to fresh wire objects, never the source log.
+ */
+function cacheableMessages(messages: ChatMessage[], rename?: (name: string) => string): Anthropic.MessageParam[] {
+  let newestUser = messages.length - 1;
+  while (newestUser >= 0 && messages[newestUser]!.role !== "user") newestUser--;
+  if (newestUser <= 0) return toAnthropicMessages(messages, rename);
+  const prefix = toAnthropicMessages(messages.slice(0, newestUser), rename);
+  const last = prefix.at(-1);
+  if (last) {
+    if (typeof last.content === "string") {
+      if (last.content.length > 0) last.content = [{ type: "text", text: last.content, cache_control: EPHEMERAL }];
+    } else {
+      const block = last.content.at(-1);
+      // These are exactly the block kinds emitted by toAnthropicMessages.
+      if (block && (block.type === "text" || block.type === "tool_use" || block.type === "tool_result")) {
+        last.content[last.content.length - 1] = { ...block, cache_control: EPHEMERAL };
+      }
+    }
+  }
+  return [...prefix, ...toAnthropicMessages(messages.slice(newestUser), rename)];
+}
+
 export class AnthropicProvider implements Provider {
   readonly name = "anthropic";
   private client: Anthropic;
@@ -225,25 +252,24 @@ export class AnthropicProvider implements Provider {
     sampling?: { temperature?: number; topP?: number };
     tools?: ToolSpec[];
   }): AsyncIterable<StreamChunk> {
+    const rename = this.oauth ? toClaudeCodeName : undefined;
+    // At most three breakpoints: last system, last declaration, stable history.
+    // OAuth identity remains the exact FIRST block; persona follows unchanged.
+    const system: Anthropic.TextBlockParam[] = [
+      ...(this.oauth ? [{ type: "text" as const, text: CLAUDE_CODE_IDENTITY }] : []),
+      ...(opts.system ? [{ type: "text" as const, text: opts.system }] : []),
+    ];
+    if (system.length > 0) system[system.length - 1]!.cache_control = EPHEMERAL;
+    const tools = opts.tools?.map(t => toAnthropicTool(t, rename));
+    if (tools?.length) tools[tools.length - 1]!.cache_control = EPHEMERAL;
     const stream = this.client.messages.stream({
       model: opts.model,
       max_tokens: 8192,
-      // On the OAuth path the identity block leads and the caller's own system
-      // prompt follows it. On the API-key path this is unchanged from before.
-      ...(this.oauth
-        ? {
-            system: [
-              { type: "text" as const, text: CLAUDE_CODE_IDENTITY },
-              ...(opts.system ? [{ type: "text" as const, text: opts.system }] : []),
-            ],
-          }
-        : { system: opts.system }),
-      messages: toAnthropicMessages(opts.messages, this.oauth ? toClaudeCodeName : undefined),
+      ...(system.length > 0 ? { system } : {}),
+      messages: cacheableMessages(opts.messages, rename),
       ...(opts.sampling?.temperature !== undefined ? { temperature: opts.sampling.temperature } : {}),
       ...(opts.sampling?.topP !== undefined ? { top_p: opts.sampling.topP } : {}),
-      ...(opts.tools && opts.tools.length > 0
-        ? { tools: opts.tools.map((t) => toAnthropicTool(t, this.oauth ? toClaudeCodeName : undefined)) }
-        : {}),
+      ...(tools?.length ? { tools } : {}),
     });
     opts.signal?.addEventListener("abort", () => stream.abort(), { once: true });
 

@@ -69,7 +69,7 @@ test("tool_use block with input split across two input_json_delta events yields 
   // Request body carries the mapped tools array with the input_schema key.
   expect(calls.length).toBe(1);
   expect(calls[0]!.body.tools).toEqual([
-    { name: "read_file", description: "Read a file", input_schema: READ_FILE_TOOL.inputSchema },
+    { name: "read_file", description: "Read a file", input_schema: READ_FILE_TOOL.inputSchema, cache_control: { type: "ephemeral" } },
   ]);
 });
 
