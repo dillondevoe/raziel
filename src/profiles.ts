@@ -34,6 +34,17 @@ export type ModelProfile = {
 // qwen2.5:7b was 20/20 on both the native and prompted paths and ~12x faster
 // than the 27b; both larger models dropped a call. (Wilson-95 floor: only
 // 20/20 passes at n=20, so the pick is "perfect and fastest", not "best".)
+//
+// THE 7b PIN IS LOAD-BEARING, not a performance preference (Augur, 2026-09-10,
+// after the ollama lane was re-scoped to the NATIVE channel only). His table is
+// asymmetric across exactly that axis: under prompted-first all three models
+// were 20/20; under native-only BOTH measured failures sit in the lane —
+// qwen2.5:14b NO_CALL (19/20), qwen3.8:27b WRONG_TOOL (19/20) — and 7b is the
+// only clean cell. Widening this profile to 14b or 27b "for capacity" widens
+// onto the only failures measured. Two honest limits: native-vs-prompted is
+// p=0.50 (not "native is worse"), and n=20 cannot pass 19/20 (a sample
+// statement, not a verdict). Widen only after the native-only n=100/model
+// re-run with REFUSED split out of NO_CALL clears the model you want.
 const REGISTRY: ModelProfile[] = [
   { id: "sonnet", provider: "anthropic", model: "claude-sonnet-5",
     contextTokens: 200_000, maxToolSurface: 24, parser: "native", streamingTools: true },
