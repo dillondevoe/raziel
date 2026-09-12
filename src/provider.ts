@@ -57,7 +57,10 @@ export type StreamChunk =
   | { type: "tool_call"; id: string; name: string; args: unknown }
   // At most one final usage snapshot per stream() call, never estimates/deltas.
   | { type: "usage"; usage: TokenUsage }
-  | { type: "done"; stopReason: "end" | "error" };
+  // "length": the provider stopped on its output budget (anthropic `max_tokens`). Visible output was
+  // streamed, so the turn is not an error — but the tail is TRUNCATED and a consumer must not read it
+  // as a considered end. A budget stop with NO visible output is thrown, never yielded (anthropic.ts).
+  | { type: "done"; stopReason: "end" | "error" | "length" };
 
 export interface Provider {
   readonly name: string;
