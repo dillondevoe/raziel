@@ -96,6 +96,10 @@ export function renderBook(events: SessionEvent[]): string {
       if (output) {
         lines.push(`  ${output}`);
       }
+    } else if (e.type === "memory_write") {
+      const refs = `${e.eventRefs.length} ref${e.eventRefs.length === 1 ? "" : "s"}`;
+      const taintTag = e.taint ? paint(YELLOW, ` [${e.taint}]`) : "";
+      lines.push(`  ${paint(CYAN, "◆")} scar ${sanitizeForTerminal(e.scarId)} (${refs})${taintTag}`);
     }
   }
 
