@@ -11,7 +11,7 @@ import { sliceTools } from "../tools/registry";
 import type { Provider } from "../provider";
 import type { Rules } from "../rules";
 import { ApprovalManager } from "../approvals";
-import { createModelCommand, createApproveCommand, providerFor } from "../commands";
+import { createModelCommand, createApproveCommand, createScarCommand, providerFor } from "../commands";
 import { createSessionCommand, createEscalateCommand, type ProfileBox, type StoreBox } from "./session_cmd";
 import { Transcript } from "./transcript";
 import { Status } from "./status";
@@ -165,6 +165,7 @@ export function createTuiApp(deps: TuiAppDeps): { surface: TuiSurface; ready: Pr
         },
       });
       const escalateCmd = createEscalateCommand({ engineBox, profileBox, modelCmd, write });
+      const scarCmd = createScarCommand({ store: deps.store, storeBox, write });
 
       const onCommand = (line: string): "handled" | "not-command" =>
         modelCmd(line) === "handled"
@@ -173,7 +174,9 @@ export function createTuiApp(deps: TuiAppDeps): { surface: TuiSurface; ready: Pr
             ? "handled"
             : sessionCmd(line) === "handled"
               ? "handled"
-              : escalateCmd(line);
+              : escalateCmd(line) === "handled"
+                ? "handled"
+                : scarCmd(line);
 
       const editor = new Editor(tui, EDITOR_THEME);
       tui.addChild(editor);

@@ -13,6 +13,7 @@ export type SessionEvent = Base & (
   | { type: "approval_request"; turn: string; requestId: string; tool: string; argsHash: string; risk: RiskClass }
   | { type: "approval_decision"; requestId: string; decision: "allow" | "deny" | "always" }
   | { type: "tool_result"; turn: string; tool: string; ok: boolean; output: string; requestId: string; taint: "tool_output"; round?: number }
+  | { type: "memory_write"; scarId: string; sessionRef: string; eventRefs: string[]; taint?: "tool_output"; hash: string }
 );
 
 export type EngineEvent = SessionEvent | { type: "assistant_delta"; turn: string; text: string };
@@ -49,6 +50,8 @@ const anyVal: FieldCheck = () => true; // `args: unknown` — no primitive shape
 // round field exists to fix. Absent round is read as "one request per round".
 const optNum: FieldCheck = (v) => v === undefined || (typeof v === "number" && Number.isInteger(v) && v >= 0);
 const oneOf = (...allowed: string[]): FieldCheck => (v) => typeof v === "string" && allowed.includes(v);
+const optOneOf = (...allowed: string[]): FieldCheck => (v) => v === undefined || (typeof v === "string" && allowed.includes(v));
+const strArr: FieldCheck = (v) => Array.isArray(v) && v.every((el) => typeof el === "string");
 
 const FIELD_CHECKS: { [T in SessionEvent["type"]]: Record<string, FieldCheck> } = {
   user_message: { text: str },
@@ -60,6 +63,7 @@ const FIELD_CHECKS: { [T in SessionEvent["type"]]: Record<string, FieldCheck> } 
   approval_request: { turn: str, requestId: str, tool: str, argsHash: str, risk: oneOf("low", "medium", "high", "critical") },
   approval_decision: { requestId: str, decision: oneOf("allow", "deny", "always") },
   tool_result: { turn: str, tool: str, ok: bool, output: str, requestId: str, taint: oneOf("tool_output"), round: optNum },
+  memory_write: { scarId: str, sessionRef: str, eventRefs: strArr, taint: optOneOf("tool_output"), hash: str },
 };
 
 /** Validates a parsed JSONL line as a well-formed SessionEvent: known `type`,

@@ -8,7 +8,7 @@ import { renderBook, listSessions } from "./book";
 import { defaultProfileId, getProfile, type ModelProfile } from "./profiles";
 import { loadSystemPrompt } from "./system_prompt";
 import { sanitizeForTerminal } from "./term";
-import { providerForOrExit, createModelCommand, createApproveCommand, createAsk, statusLine } from "./commands";
+import { providerForOrExit, createModelCommand, createApproveCommand, createScarCommand, createAsk, statusLine } from "./commands";
 import { Workspace } from "./tools/workspace";
 import { builtinTools, sliceTools } from "./tools/registry";
 import { Rules } from "./rules";
@@ -196,11 +196,13 @@ async function main(): Promise<void> {
   const approveCmd = createApproveCommand({ rules, rulesPath, write });
   const sessionCmd = createSessionCommand({ engineBox, profileBox, storeBox, tools: toolsFull, write, maxRounds: launch.maxRounds });
   const escalateCmd = createEscalateCommand({ engineBox, profileBox, modelCmd, write });
+  const scarCmd = createScarCommand({ store, storeBox, write });
   const onCommand = (line: string): "handled" | "not-command" =>
     modelCmd(line) === "handled" ? "handled"
     : approveCmd(line) === "handled" ? "handled"
     : sessionCmd(line) === "handled" ? "handled"
-    : escalateCmd(line);
+    : escalateCmd(line) === "handled" ? "handled"
+    : scarCmd(line);
 
   const rl = createInterface({ input: process.stdin, output: process.stdout, prompt: "raziel> " });
   rl.on("close", () => { rlClosed = true; });

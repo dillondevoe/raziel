@@ -51,6 +51,19 @@ test("isValidEvent: accepts a well-formed event of every known type", () => {
   expect(isValidEvent(mkEvent("tool_result", { turn: "t1", tool: "ls", ok: true, output: "", requestId: "r1", taint: "tool_output" }))).toBe(true);
 });
 
+test("isValidEvent: accepts memory_write with and without taint; rejects wrong-typed eventRefs", () => {
+  const untainted = mkEvent("memory_write", { scarId: "s1", sessionRef: "sess1", eventRefs: ["e1", "e2"], hash: "ab".repeat(32) });
+  expect(isValidEvent(untainted)).toBe(true);
+  const tainted = mkEvent("memory_write", { scarId: "s1", sessionRef: "sess1", eventRefs: [], taint: "tool_output", hash: "ab".repeat(32) });
+  expect(isValidEvent(tainted)).toBe(true);
+  const badTaint = { ...JSON.parse(JSON.stringify(tainted)), taint: "other" };
+  expect(isValidEvent(badTaint)).toBe(false);
+  const badRefs = { ...JSON.parse(JSON.stringify(untainted)), eventRefs: "e1" };
+  expect(isValidEvent(badRefs)).toBe(false);
+  const badRefsEl = { ...JSON.parse(JSON.stringify(untainted)), eventRefs: ["e1", 2] };
+  expect(isValidEvent(badRefsEl)).toBe(false);
+});
+
 test("isValidEvent: rejects an unknown type", () => {
   expect(isValidEvent({ id: "x", ts: "2026-01-01T00:00:00.000Z", type: "evil" })).toBe(false);
 });

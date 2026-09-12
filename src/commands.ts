@@ -1,5 +1,7 @@
 import { Engine } from "./engine";
 import type { SessionStore } from "./session";
+import { mkEvent } from "./events";
+import { writeScar } from "./memory";
 import { AnthropicProvider } from "./providers/anthropic";
 import { OllamaProvider } from "./providers/ollama";
 import { OpenAICompatProvider } from "./providers/openai_compat";
@@ -187,6 +189,58 @@ export function createApproveCommand(deps: {
     }
 
     deps.write(`raziel: unknown /approve usage — try "/approve" or "/approve rm <n>"\n`);
+    return "handled";
+  };
+}
+
+/** The `/scar <text>` REPL command (v1.1a Capture, docs/milestones/2026-09-05
+ * §4). Writes a scar file with provenance from the current session — the
+ * events in the most recent turn, or the whole log if no turn has started
+ * yet — and appends a `memory_write` event so the Book renders it. Additive
+ * and opt-in: no read side, nothing here changes engine behavior. */
+export function createScarCommand(deps: {
+  store: SessionStore;
+  storeBox?: { current: SessionStore };
+  write: (s: string) => void;
+}): (line: string) => "handled" | "not-command" {
+  return (line: string) => {
+    if (line !== "/scar" && !line.startsWith("/scar ")) return "not-command";
+    const text = line.slice("/scar".length).trim();
+    if (text === "") {
+      deps.write("raziel: usage — /scar <text>\n");
+      return "handled";
+    }
+
+    // I1: prefer a live-resumed session (same rule as createModelCommand) —
+    // provenance must point at the session /scar is actually running in.
+    const store = deps.storeBox?.current ?? deps.store;
+    const events = store.replay();
+    // "The current turn" = everything after the last turn_end. user_message
+    // carries no `turn` field (it's what STARTS a turn, before one is
+    // assigned), so scoping by the turn field itself would drop it; scoping
+    // by position after the last boundary event includes it correctly. A
+    // session with no turn_end yet (first line is /scar) falls back to the
+    // whole log so far.
+    let lastTurnEndIdx = -1;
+    for (let i = events.length - 1; i >= 0; i--) {
+      if (events[i]!.type === "turn_end") { lastTurnEndIdx = i; break; }
+    }
+    const scoped = events.slice(lastTurnEndIdx + 1);
+    const eventRefs = scoped.map((e) => e.id);
+    // Taint propagates (§3): a scar is never more trusted than the events it
+    // came from. tool_result is the only event type that carries taint today.
+    const taint: "tool_output" | undefined = scoped.some((e) => e.type === "tool_result") ? "tool_output" : undefined;
+
+    const written = writeScar(text, store.id, eventRefs, taint);
+    store.append(mkEvent("memory_write", {
+      scarId: written.scarId,
+      sessionRef: written.sessionRef,
+      eventRefs: written.eventRefs,
+      taint: written.taint,
+      hash: written.hash,
+    }));
+    const refCount = `${eventRefs.length} event ref${eventRefs.length === 1 ? "" : "s"}`;
+    deps.write(`raziel: scar ${written.scarId} written (${refCount}${taint ? ", tainted" : ""})\n`);
     return "handled";
   };
 }
