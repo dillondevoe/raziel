@@ -193,6 +193,10 @@ export function toAnthropicMessages(
 }
 
 const EPHEMERAL = { type: "ephemeral" as const };
+// Output budget per round. 8192 was the number until 2026-09-12, when a sonnet-5 round on a design task
+// spent exactly 8192 tokens on reasoning and emitted nothing (see the max_tokens guard below). Sonnet/Opus 5
+// accept far more; cost accrues only on tokens actually produced, so a high ceiling is not a spend.
+export const MAX_TOKENS = 32_000;
 
 /** Mark the LAST content block of the LAST message as the third breakpoint.
  * The cached prefix must GROW with the conversation: inside a tool turn every
@@ -264,7 +268,7 @@ export class AnthropicProvider implements Provider {
     if (tools?.length) tools[tools.length - 1]!.cache_control = EPHEMERAL;
     const stream = this.client.messages.stream({
       model: opts.model,
-      max_tokens: 8192,
+      max_tokens: MAX_TOKENS,
       ...(system.length > 0 ? { system } : {}),
       messages: cacheableMessages(opts.messages, rename),
       ...(opts.sampling?.temperature !== undefined ? { temperature: opts.sampling.temperature } : {}),
@@ -277,7 +281,9 @@ export class AnthropicProvider implements Provider {
     let done = false; let wake: (() => void) | null = null;
     let streamErr: unknown = null;
     let usage: Anthropic.Usage | undefined;
-    stream.on("text", (t: string) => { queue.push({ kind: "delta", text: t }); wake?.(); });
+    let sawVisible = false;   // any text delta or tool call reached the consumer
+    let stopReason: string | null | undefined;
+    stream.on("text", (t: string) => { sawVisible = true; queue.push({ kind: "delta", text: t }); wake?.(); });
 
     // Own accumulation of tool_use blocks off the raw event stream — deliberately
     // not the SDK's built-in `inputJson`/`contentBlock` events, which parse
@@ -322,7 +328,7 @@ export class AnthropicProvider implements Provider {
 
     // The SDK merges message_start/message_delta cumulative counts by overwrite.
     // Use its final snapshot, not a sum of deltas or a second wire parser.
-    stream.finalMessage().then((message) => { usage = message.usage; }).catch((e) => { streamErr = streamErr ?? e; }).finally(() => { done = true; wake?.(); });
+    stream.finalMessage().then((message) => { usage = message.usage; stopReason = message.stop_reason; }).catch((e) => { streamErr = streamErr ?? e; }).finally(() => { done = true; wake?.(); });
 
     while (!done || queue.length > 0) {
       if (queue.length === 0) await new Promise<void>((r) => { wake = r; });
@@ -331,11 +337,22 @@ export class AnthropicProvider implements Provider {
         if (opts.signal?.aborted) return;
         const item = queue.shift()!;
         if (item.kind === "delta") yield { type: "delta", text: item.text };
-        else yield { type: "tool_call", id: item.id, name: item.name, args: item.args };
+        else { sawVisible = true; yield { type: "tool_call", id: item.id, name: item.name, args: item.args }; }
       }
     }
     if (opts.signal?.aborted) return;
     if (streamErr) throw asProviderError(streamErr);
+    if (stopReason === "max_tokens" && !sawVisible) {
+      // Live exhibit 2026-09-12 (sonnet-ships-1 round 3): 8192 output tokens, all of them reasoning,
+      // no text, no tool call — and this door said "end". The engine then persisted an EMPTY
+      // assistant_message and closed the turn cleanly; the operator saw a prompt and nothing else.
+      // A budget stop that produced nothing visible is an error to be recorded, not an end.
+      const reasoning = usage?.output_tokens_details?.thinking_tokens;
+      throw new Error(
+        `anthropic: max_tokens (${MAX_TOKENS}) exhausted with NO visible output — output_tokens=${usage?.output_tokens ?? "?"}` +
+        (reasoning != null ? `, reasoning consumed ${reasoning}` : "") +
+        `. The model spent the whole budget thinking. Raise MAX_TOKENS, bound the thinking budget, or split the task.`);
+    }
     if (usage && typeof usage.input_tokens === "number" && typeof usage.output_tokens === "number") {
       const reasoning = usage.output_tokens_details?.thinking_tokens;
       yield { type: "usage", usage: {
@@ -346,6 +363,6 @@ export class AnthropicProvider implements Provider {
         ...(usage.cache_creation_input_tokens != null ? { cache_write_tokens: usage.cache_creation_input_tokens } : {}),
       } };
     }
-    if (!opts.signal?.aborted) yield { type: "done", stopReason: "end" };
+    if (!opts.signal?.aborted) yield { type: "done", stopReason: stopReason === "max_tokens" ? "length" : "end" };
   }
 }
