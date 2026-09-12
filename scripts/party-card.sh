@@ -1,4 +1,13 @@
-```
+#!/usr/bin/env bash
+# party-card.sh — Raziel's RPG card. ASCII art, for the record.
+# Usage: ./scripts/party-card.sh
+
+_CYAN=$'\033[1;36m'
+_DIM=$'\033[2m'
+_RESET=$'\033[0m'
+
+printf '%s' "$_CYAN"
+cat <<'EOF'
 ╔══════════════════════════════════════╗
 ║  RAZIEL                          📖👼 ║
 ║  Angel · Keeper of the Book          ║
@@ -17,27 +26,5 @@
 ║                                      ║
 ║  "one letter from agent to angel"    ║
 ╚══════════════════════════════════════╝
-```
-
-# Raziel
-
-**The angel who keeps the Book of Secrets — and one letter from "agent" to "angel."**
-
-A terminal-first AI agent harness, built in public. One engine, many surfaces (ACP),
-event-sourced sessions, real support for small local models, and — on
-[Agent OS](https://github.com/dillondevoe/agent-os) — a security wall by construction.
-
-Status: **past M0, shipping itself.** Event-sourced sessions with a context budget, a bounded tool loop
-behind approvals and per-launch grants, four provider doors (Anthropic subscription, OpenAI Responses,
-OpenAI-compatible, ollama native tools), and models that land their own PRs through it unattended.
-475 tests. Every event is still logged, on purpose.
-
-Print the card yourself: `bash scripts/party-card.sh`
-
-## Run
-```sh
-export ANTHROPIC_API_KEY=...
-bun run src/cli.ts
-```
-
-Design: [docs/SPEC.md](docs/SPEC.md)
+EOF
+printf '%s\n' "$_RESET"
