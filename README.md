@@ -28,9 +28,9 @@ event-sourced sessions, real support for small local models, and — on
 [Agent OS](https://github.com/dillondevoe/agent-os) — a security wall by construction.
 
 Status: **past M0, shipping itself.** Event-sourced sessions with a context budget, a bounded tool loop
-behind approvals and per-launch grants, four provider doors (Anthropic subscription, OpenAI Responses,
+behind approvals and per-launch grants, four provider doors (Anthropic API key, OpenAI Responses,
 OpenAI-compatible, ollama native tools), and models that land their own PRs through it unattended.
-475 tests. Every event is still logged, on purpose.
+463 tests. Every event is still logged, on purpose.
 
 Print the card yourself: `bash scripts/party-card.sh`
 
