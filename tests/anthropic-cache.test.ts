@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { AnthropicProvider, CLAUDE_CODE_IDENTITY } from "../src/providers/anthropic";
+import { AnthropicProvider } from "../src/providers/anthropic";
 import type { ChatMessage, ToolSpec } from "../src/provider";
 
 const cache = { type: "ephemeral" };
@@ -41,12 +41,12 @@ const exchange: ChatMessage[] = [
   { role: "tool", results: [{ id: "c", name: "read_file", ok: true, output: "bytes" }] },
 ];
 
-for (const apiKey of ["test-key", "sk-ant-oat01-test"]) {
+for (const apiKey of ["test-key"]) {
   test(`cache positions are exactly last system, last tool and the message tail (${apiKey})`, async () => {
     const h = harness(apiKey);
     const before = structuredClone({ exchange, tools });
     const body = await h.send(exchange, "Fixed persona", tools);
-    const lastSystem = apiKey.startsWith("sk-ant-oat") ? 1 : 0;
+    const lastSystem = 0;
     expect(breakpoints(body)).toEqual([
       `.system.${lastSystem}.cache_control`, ".messages.4.content.0.cache_control", ".tools.1.cache_control",
     ]);
@@ -55,7 +55,6 @@ for (const apiKey of ["test-key", "sk-ant-oat01-test"]) {
     expect(body.messages[1].content).toEqual([{ type: "text", text: "old answer" }]); // no mark mid-history
     expect(body.messages[2]).toEqual({ role: "user", content: "current question" });
     expect(body.messages[4].content[0]).toMatchObject({ type: "tool_result", tool_use_id: "c", cache_control: cache });
-    if (lastSystem === 1) expect(body.system[0]).toEqual({ type: "text", text: CLAUDE_CODE_IDENTITY });
     expect({ exchange, tools }).toEqual(before);
   });
 }
@@ -110,7 +109,7 @@ test("no messages means no message breakpoint; every combination stays at most t
 });
 
 test("consecutive rounds have byte-identical system and tools request fields with the same inputs", async () => {
-  const h = harness("sk-ant-oat01-test");
+  const h = harness("test-key");
   const first = await h.send(exchange.slice(0, 3), "Fixed persona", tools);
   const second = await h.send(exchange, "Fixed persona", tools);
   expect(JSON.stringify({ system: second.system, tools: second.tools })).toBe(JSON.stringify({ system: first.system, tools: first.tools }));

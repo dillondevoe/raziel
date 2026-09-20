@@ -202,14 +202,6 @@ test("anthropic: a round maps to tool_use blocks then ONE user message of tool_r
   expect(res.content[1]).toMatchObject({ tool_use_id: "c2", is_error: true });
 });
 
-test("anthropic: the OAuth rename reaches replayed tool_use names, not only the declarations", () => {
-  const out = toAnthropicMessages(
-    [{ role: "assistant", content: "", toolCalls: [{ id: "c1", name: "read_file", args: {} }] }],
-    (n) => (n === "read_file" ? "Read" : n),
-  );
-  expect((out[0]! as any).content[0].name).toBe("Read");
-});
-
 test("anthropic: assistant prose survives alongside its tool calls", () => {
   const out = toAnthropicMessages([{ role: "assistant", content: "thinking", toolCalls: [{ id: "c1", name: "t", args: {} }] }]);
   expect((out[0]! as any).content.map((b: any) => b.type)).toEqual(["text", "tool_use"]);

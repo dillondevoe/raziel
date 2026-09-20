@@ -14,42 +14,26 @@ type QueuedChunk = { kind: "delta"; text: string } | { kind: "tool_call"; id: st
 // value).
 type ToolBlockAcc = { id: string; name: string; json: string };
 
-// `rename` is applied to the advertised name and defaults to identity, so the
-// console-API-key path is byte-identical to what it was before lane (a): only
-// the OAuth path — the Claude Code door — gets canonicalized names.
-function toAnthropicTool(spec: ToolSpec, rename: (n: string) => string = (n) => n): Anthropic.Tool {
-  return { name: rename(spec.name), description: spec.description, input_schema: spec.inputSchema as Anthropic.Tool.InputSchema };
+function toAnthropicTool(spec: ToolSpec): Anthropic.Tool {
+  return { name: spec.name, description: spec.description, input_schema: spec.inputSchema as Anthropic.Tool.InputSchema };
 }
 
-// Two KINDS of credential arrive through the same door. `sk-ant-api03-...` is a
-// console API key and bills per token. `sk-ant-oat01-...` is the OAuth token
-// `claude setup-token` mints, and it draws on the operator's Claude subscription
-// instead. They are not interchangeable on the wire: an API key goes out as
-// `x-api-key`, an OAuth token MUST go as `Authorization: Bearer` alongside the
-// Claude Code identity. Sniffing the prefix is what the ecosystem already does
-// (pi-ai's own `isOAuthToken` is this same substring test), and it means there
-// is no such thing as putting the credential in the "wrong" variable — the
-// routing follows the credential rather than the operator's memory.
+// A Claude SUBSCRIPTION token (`sk-ant-oat…`, minted by `claude setup-token`) is
+// REFUSED here, on purpose. The only way to make that token work outside Claude
+// Code is to present this program AS Claude Code — its user-agent, its "You are
+// Claude Code" identity block, its tool names — and raziel did exactly that until
+// 2026-09-20. That is impersonating another product to the vendor, against
+// Anthropic's terms for subscription credentials, and it put the operator's whole
+// plan at risk for a convenience. Removed, not hidden behind a flag: a flag is a
+// path someone turns back on. This door takes a console API key (`sk-ant-api…`,
+// billed per token); subscription use belongs to Claude Code itself.
 export function isOAuthToken(key: string): boolean {
   return key.includes("sk-ant-oat");
 }
 
-// The user-agent version the OAuth endpoint is told it is talking to. Pinned
-// rather than read from the local CLI on purpose: this must match what the API
-// accepts, not whatever happens to be installed on the machine running raziel
-// (they are routinely different — the Dell had 2.1.220 while pi-ai pinned this).
-// Named and exported so it is greppable when it goes stale, which it will.
-// Provenance: @earendil-works/pi-ai dist/api/anthropic-messages.js:40.
-export const CLAUDE_CODE_UA_VERSION = "2.1.75";
-
-// The OAuth endpoint requires the FIRST system block to be exactly this. It is
-// not decoration and it is not part of the caller's persona — pi-ai's buildParams
-// carries the comment "For OAuth tokens, we MUST include Claude Code identity",
-// and a caller's own system prompt is APPENDED as a second block, never
-// substituted for this one. Headers alone are not enough to make an OAuth token
-// work; this is the half that is easy to miss because the header change is the
-// half that gets written down.
-export const CLAUDE_CODE_IDENTITY = "You are Claude Code, Anthropic's official CLI for Claude.";
+export const OAUTH_REFUSAL =
+  "anthropic: this is a Claude subscription token (sk-ant-oat…). Raziel does not accept it — using it " +
+  "outside Claude Code requires impersonating Claude Code. Use a console API key (sk-ant-api…) or another provider.";
 
 // On a subscription, 429 is the STEADY STATE near the plan ceiling, not a
 // malfunction — Dillon exhausts Max 20x most weeks — so it must not read like
@@ -72,49 +56,6 @@ export function asProviderError(err: unknown): Error {
   );
 }
 
-// Claude Code 2.x tool names, canonical casing. The OAuth endpoint is the Claude
-// Code door and is told it is talking to Claude Code (CLAUDE_CODE_IDENTITY
-// above), so a tool of ours that CORRESPONDS to one of these must go out under
-// Claude Code's spelling. Mirrored from @earendil-works/pi-ai
-// dist/api/anthropic-messages.js:44 (upstream source:
-// https://cchistory.mariozechner.at/data/prompts-2.1.11.md, refreshed via
-// https://github.com/badlogic/cchistory). Exported so it is greppable when it
-// goes stale, which it will — same reason as CLAUDE_CODE_UA_VERSION.
-export const CLAUDE_CODE_TOOLS = [
-  "Read", "Write", "Edit", "Bash", "Grep", "Glob", "AskUserQuestion",
-  "EnterPlanMode", "ExitPlanMode", "KillShell", "NotebookEdit", "Skill",
-  "Task", "TaskOutput", "TodoWrite", "WebFetch", "WebSearch",
-] as const;
-
-const ccLookup = new Map<string, string>(CLAUDE_CODE_TOOLS.map((t) => [t.toLowerCase(), t]));
-
-/** Outbound: our tool name -> Claude Code's canonical casing when the two
- * correspond case-insensitively, otherwise unchanged. Of raziel's seven
- * builtins exactly two correspond (grep -> Grep, glob -> Glob); `read_file` is
- * NOT `Read` and `fetch` is NOT `WebFetch`, so most names pass straight
- * through. */
-export function toClaudeCodeName(name: string): string {
-  return ccLookup.get(name.toLowerCase()) ?? name;
-}
-
-/** Inbound: Claude Code's spelling -> the name WE advertised, which is what the
- * engine's registry is keyed on.
- *
- * Built from the advertised tool set and NOT from CLAUDE_CODE_TOOLS, and that is
- * the load-bearing half. Canonicalization is lossy in principle — a static table
- * can only invert the names that happen to be in it, so it would hand the engine
- * `Read_File` for an advertised `read_file` and the dispatcher would answer
- * "unknown tool". The only authority on what was advertised is what was
- * advertised. pi-ai's own fromClaudeCodeName takes `tools` for this reason.
- *
- * A name matching nothing advertised is returned UNCHANGED rather than guessed
- * at: inversion must not invent a dispatchable name out of a hallucinated one. */
-export function fromClaudeCodeName(name: string, tools?: ToolSpec[]): string {
-  if (!tools || tools.length === 0) return name;
-  const lower = name.toLowerCase();
-  return tools.find((t) => t.name.toLowerCase() === lower)?.name ?? name;
-}
-
 
 /** ChatMessage[] -> Anthropic MessageParam[].
  *
@@ -128,13 +69,6 @@ export function fromClaudeCodeName(name: string, tools?: ToolSpec[]): string {
  * - `content: ""` is REJECTED by the API on an assistant message. A mid-turn
  *   round legitimately has no prose, so an empty text block must be omitted
  *   rather than sent -- the tool_use blocks are the content.
- *
- * `toClaudeCodeName` is applied to outbound `tool_use.name` for the same reason
- * PR #2 applies it to the tool declarations: on the OAuth path the names the
- * model was shown are the renamed ones, so replaying its OWN past call under
- * the internal name shows it a call it never made. The rename must be applied
- * everywhere a tool name crosses outbound, and a declaration is not the only
- * place one does.
  */
 /** The Messages API requires `tool_use.id` to match ^[a-zA-Z0-9_-]+$ and be at
  * most 64 characters. Ids in the log are whatever the ORIGINATING provider
@@ -149,10 +83,7 @@ export function toAnthropicToolId(id: string): string {
   return id.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 64);
 }
 
-export function toAnthropicMessages(
-  messages: ChatMessage[],
-  rename?: (name: string) => string,
-): Anthropic.MessageParam[] {
+export function toAnthropicMessages(messages: ChatMessage[]): Anthropic.MessageParam[] {
   const out: Anthropic.MessageParam[] = [];
   for (const m of messages) {
     if (m.role === "user") {
@@ -164,7 +95,7 @@ export function toAnthropicMessages(
         blocks.push({
           type: "tool_use",
           id: toAnthropicToolId(c.id),
-          name: rename ? rename(c.name) : c.name,
+          name: c.name,
           input: (c.args ?? {}) as Record<string, unknown>,
         });
       }
@@ -207,8 +138,8 @@ export const MAX_TOKENS = 32_000;
  * walks back from a breakpoint, so a moved breakpoint still hits the old one.
  * All cache metadata belongs to fresh wire objects, never the source log.
  */
-function cacheableMessages(messages: ChatMessage[], rename?: (name: string) => string): Anthropic.MessageParam[] {
-  const mapped = toAnthropicMessages(messages, rename);
+function cacheableMessages(messages: ChatMessage[]): Anthropic.MessageParam[] {
+  const mapped = toAnthropicMessages(messages);
   const last = mapped.at(-1);
   if (!last) return mapped;
   if (typeof last.content === "string") {
@@ -226,27 +157,12 @@ function cacheableMessages(messages: ChatMessage[], rename?: (name: string) => s
 export class AnthropicProvider implements Provider {
   readonly name = "anthropic";
   private client: Anthropic;
-  private oauth: boolean;
 
   constructor(opts?: { apiKey?: string; fetchImpl?: typeof fetch }) {
     const key = opts?.apiKey ?? process.env.ANTHROPIC_API_KEY;
-    this.oauth = !!key && isOAuthToken(key);
+    if (key && isOAuthToken(key)) throw new Error(OAUTH_REFUSAL);
     this.client = new Anthropic({
-      // An OAuth token passed as `apiKey` becomes an `x-api-key` header and the
-      // API answers "API key is invalid" — a transport error wearing an
-      // auth-error costume, for a credential that is perfectly good. `apiKey`
-      // must be null so the SDK does not also send that header.
-      ...(this.oauth
-        ? {
-            apiKey: null,
-            authToken: key,
-            defaultHeaders: {
-              "anthropic-beta": "claude-code-20250219,oauth-2025-04-20",
-              "user-agent": `claude-cli/${CLAUDE_CODE_UA_VERSION}`,
-              "x-app": "cli",
-            },
-          }
-        : { apiKey: key }),
+      apiKey: key,
       ...(opts?.fetchImpl ? { fetch: opts.fetchImpl } : {}),
     });
   }
@@ -256,21 +172,18 @@ export class AnthropicProvider implements Provider {
     sampling?: { temperature?: number; topP?: number };
     tools?: ToolSpec[];
   }): AsyncIterable<StreamChunk> {
-    const rename = this.oauth ? toClaudeCodeName : undefined;
     // At most three breakpoints: last system, last declaration, stable history.
-    // OAuth identity remains the exact FIRST block; persona follows unchanged.
     const system: Anthropic.TextBlockParam[] = [
-      ...(this.oauth ? [{ type: "text" as const, text: CLAUDE_CODE_IDENTITY }] : []),
       ...(opts.system ? [{ type: "text" as const, text: opts.system }] : []),
     ];
     if (system.length > 0) system[system.length - 1]!.cache_control = EPHEMERAL;
-    const tools = opts.tools?.map(t => toAnthropicTool(t, rename));
+    const tools = opts.tools?.map(t => toAnthropicTool(t));
     if (tools?.length) tools[tools.length - 1]!.cache_control = EPHEMERAL;
     const stream = this.client.messages.stream({
       model: opts.model,
       max_tokens: MAX_TOKENS,
       ...(system.length > 0 ? { system } : {}),
-      messages: cacheableMessages(opts.messages, rename),
+      messages: cacheableMessages(opts.messages),
       ...(opts.sampling?.temperature !== undefined ? { temperature: opts.sampling.temperature } : {}),
       ...(opts.sampling?.topP !== undefined ? { top_p: opts.sampling.topP } : {}),
       ...(tools?.length ? { tools } : {}),
@@ -293,14 +206,7 @@ export class AnthropicProvider implements Provider {
     const toolBlocks = new Map<number, ToolBlockAcc>();
     stream.on("streamEvent", (event) => {
       if (event.type === "content_block_start" && event.content_block.type === "tool_use") {
-        // The INVERSE of the outbound rename, and it must be here rather than
-        // left to the engine: the registry is keyed on the names we advertised
-        // (engine_tool_call.ts looks up `tools.registry.get(call.name)`), so a
-        // `Grep` that reached the dispatcher unconverted would answer "unknown
-        // tool" — normalizing only outbound turns a working path into a broken
-        // one. Inverted against opts.tools, never against CLAUDE_CODE_TOOLS; see
-        // fromClaudeCodeName for why a static table is not enough.
-        const name = this.oauth ? fromClaudeCodeName(event.content_block.name, opts.tools) : event.content_block.name;
+        const name = event.content_block.name;
         toolBlocks.set(event.index, { id: event.content_block.id, name, json: "" });
       } else if (event.type === "content_block_delta" && event.delta.type === "input_json_delta") {
         const block = toolBlocks.get(event.index);
