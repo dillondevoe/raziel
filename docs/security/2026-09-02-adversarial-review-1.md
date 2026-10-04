@@ -1,6 +1,6 @@
 # Raziel adversarial security review — 2026-09-01
 
-Scope: /Users/dtd/raziel @ 866ea67 (+ untracked src/providers/ollama.ts, tests/ollama-provider.test.ts).
+Scope: <repo> @ 866ea67 (+ untracked src/providers/ollama.ts, tests/ollama-provider.test.ts).
 Method: full source read; live probes with `RAZIEL_FAKE=1` and a scratch `RAZIEL_HOME` under the session
 scratchpad (never ~/.raziel); no tracked files modified; no network. `bun test`: 42 pass / 0 fail.
 
@@ -17,8 +17,8 @@ the coming M1b tool system.
 shell alias, automation, or (soon) an ACP client that passes an attacker-influenced session id makes
 raziel append attacker/model-controlled JSON lines to any writable path ending `.jsonl`, and `book`
 renders any such file's contents to the terminal.
-**Where.** /Users/dtd/raziel/src/session.ts:21-22 (`this.id = sessionId ?? …; this.path = join(sessionsDir(), `${this.id}.jsonl`)`);
-callers /Users/dtd/raziel/src/cli.ts:52 (`book`), :56 (`--session`).
+**Where.** <repo>/src/session.ts:21-22 (`this.id = sessionId ?? …; this.path = join(sessionsDir(), `${this.id}.jsonl`)`);
+callers <repo>/src/cli.ts:52 (`book`), :56 (`--session`).
 **Proof.**
 - Write: `printf 'hello\n/quit\n' | RAZIEL_FAKE=1 RAZIEL_HOME=$H bun run src/cli.ts --session '../../escape-probe'`
   created `…/scratchpad/probe/escape-probe.jsonl` **outside** `$H` (two levels above sessions/).
@@ -35,8 +35,8 @@ arrive over ACP/web-panel (SPEC §2: "ACP is the only door") or ids are derived 
 terminals → classic paste-to-shell), `ESC[8m` conceal, `ESC[2J` clear, cursor-move overwrites — all
 delivered verbatim both live and on every later `book` replay. This is the exact class that becomes an
 approval-bypass in M1b (display `ls`, approve `curl|sh`).
-**Where.** Live stream: /Users/dtd/raziel/src/cli.ts:36 (`opts.write(e.text)` raw). Replay:
-/Users/dtd/raziel/src/book.ts:71 (user text), :73/76/78 (body), :93-94 (listSessions preview — `truncate()`
+**Where.** Live stream: <repo>/src/cli.ts:36 (`opts.write(e.text)` raw). Replay:
+<repo>/src/book.ts:71 (user text), :73/76/78 (body), :93-94 (listSessions preview — `truncate()`
 collapses only `\s+`, ESC/BEL pass through; session *filenames* are also printed raw). Error text path too
 (cli.ts:38, book.ts:78 — provider-controlled, see F6).
 **Proof.** Drove hostile deltas through FakeProvider via a scratchpad script into a scratch RAZIEL_HOME;
@@ -52,7 +52,7 @@ own `paint()` codes which are added after sanitization. Apply to user, assistant
 any file the store can be pointed at (F1 traversal, sync'd/tampered session dirs) forges arbitrary events
 — including future `approval_decision: "always"` and `tool_result` records — that engine context and book
 render will trust verbatim.
-**Where.** /Users/dtd/raziel/src/session.ts:34.
+**Where.** <repo>/src/session.ts:34.
 **Proof of the good news (write side).** Hostile deltas containing a raw `\n` + a complete forged JSON
 event line, plus U+2028/U+2029, were streamed through FakeProvider: the session file held exactly 3 lines,
 per-line types `[user_message, assistant_message, turn_end]`, forged event **not** parseable as a
@@ -66,7 +66,7 @@ strings); skip-with-count anything else. Never let replayed events seed security
 `assistant_message` events, so anyone who can write a session file (F1, SyncThing'd dirs, backup restore)
 injects assistant-role turns the model believes it said — a durable jailbreak that re-arms on every
 `--session` resume, and the laundering seed for M1b tool calls.
-**Where.** /Users/dtd/raziel/src/engine.ts:28-35.
+**Where.** <repo>/src/engine.ts:28-35.
 **Minimal fix.** Can't fully fix (resume is the feature) — but: fix F1, validate on replay (F3), and in
 M1b mark context reconstructed from disk as replay-provenance so tool-affecting instructions inside it are
 never auto-trusted (taint bit, SPEC lane 2 — pull it forward from v1.5).
@@ -75,7 +75,7 @@ never auto-trusted (taint bit, SPEC lane 2 — pull it forward from v1.5).
 **Attack story.** `join()` treats an absolute id as relative (`$HOME/sessions/private/tmp/….jsonl`), the
 parent dirs don't exist, `appendFileSync` throws ENOENT, and every turn short-circuits to an error event
 that also can't persist — the REPL keeps running with no model call and no log.
-**Where.** /Users/dtd/raziel/src/session.ts:22,26; swallow at /Users/dtd/raziel/src/engine.ts:37-43,50-58.
+**Where.** <repo>/src/session.ts:22,26; swallow at <repo>/src/engine.ts:37-43,50-58.
 **Proof.** `--session "$S/probe/absprobe"` → banner prints the raw id, then
 `[error] ENOENT … /home/sessions/private/tmp/…/absprobe.jsonl`; nothing written anywhere.
 **Minimal fix.** Same id validation as F1 (reject at startup with a clear message, exit non-zero).
@@ -85,8 +85,8 @@ that also can't persist — the REPL keeps running with no model call and no log
 `Error.message`; the engine appends that to the session JSONL and the CLI prints it raw — an
 attacker-controlled *server* (or SSRF target once baseUrl is configurable, F7) gets a byte channel into
 the terminal (F2) and the durable log.
-**Where.** /Users/dtd/raziel/src/providers/ollama.ts:44 (`throw new Error(\`ollama /api/chat ${res.status}: ${body}\`)`),
-:69 (malformed line echoed); persisted at /Users/dtd/raziel/src/engine.ts:88, printed at cli.ts:38.
+**Where.** <repo>/src/providers/ollama.ts:44 (`throw new Error(\`ollama /api/chat ${res.status}: ${body}\`)`),
+:69 (malformed line echoed); persisted at <repo>/src/engine.ts:88, printed at cli.ts:38.
 Key handling itself is clean today: `ANTHROPIC_API_KEY` is read from env only (anthropic.ts:9, cli.ts:63)
 and never written to session files (checked: no env values in any event constructor); `RAZIEL_FAKE` is a
 strict `=== "1"` check. Anthropic SDK error messages are believed to redact auth headers — THEORIZED, worth
@@ -94,7 +94,7 @@ a pin-test when the compat provider lands (`RAZIEL_COMPAT_KEY` must get the same
 **Minimal fix.** Truncate (e.g. 512 bytes) + F2-sanitize provider error text at event-creation time.
 
 ### F7 — DESIGN-NOTE — baseUrl / SSRF shape for the coming user-editable profiles
-Today the registry is hardcoded (/Users/dtd/raziel/src/profiles.ts:18-25 — `127.0.0.1:11434` only) and
+Today the registry is hardcoded (<repo>/src/profiles.ts:18-25 — `127.0.0.1:11434` only) and
 OllamaProvider accepts any injected `baseUrl` (ollama.ts:15) — safe as long as only code sets it. The M1a
 plan adds `OpenAICompatProvider({ baseUrl, apiKey })` and later milestones make profiles user-editable
 config. Requirements to carry into that design: (a) scheme allowlist http/https only; (b) first-use
@@ -162,7 +162,7 @@ BEGIN…PRIVATE KEY, AIza*): **no matches** in any commit. `.gitignore` covers `
 repo posture OK on this axis today; re-run the sweep pre-push once real provider config lands.
 
 ### F11 — LOW — `SessionStore.list()` stat race crashes `book` — THEORIZED
-readdir→statSync per file (/Users/dtd/raziel/src/session.ts:45) with no try/catch: a session file deleted
+readdir→statSync per file (<repo>/src/session.ts:45) with no try/catch: a session file deleted
 between the two calls (concurrent raziel, cleanup job) throws and takes down `book`/listSessions.
 Availability nit. Fix: wrap statSync, skip missing.
 

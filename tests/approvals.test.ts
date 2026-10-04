@@ -273,7 +273,7 @@ describe("buildCard", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Grant (per-launch headless authorization). Geist, 2026-09-11, Dillon's
+// Grant (per-launch headless authorization). Geist, 2026-09-11, the owner's
 // direction "headless approval policy, let astra ship". A grant sits BEFORE
 // the ask: covered -> allow; present-but-not-covering -> deny with a reason
 // and the asker is never called (no human is there); critical -> deny as

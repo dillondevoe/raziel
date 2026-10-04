@@ -36,7 +36,7 @@ export const OAUTH_REFUSAL =
   "outside Claude Code requires impersonating Claude Code. Use a console API key (sk-ant-api…) or another provider.";
 
 // On a subscription, 429 is the STEADY STATE near the plan ceiling, not a
-// malfunction — Dillon exhausts Max 20x most weeks — so it must not read like
+// malfunction — heavy users hit the plan ceiling most weeks — so it must not read like
 // one. The SDK already retries with exponential backoff honouring `retry-after`;
 // adding a second retry layer here would only make the wait longer and less
 // legible. What was missing is that the surfaced error said nothing about which

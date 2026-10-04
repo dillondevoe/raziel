@@ -192,7 +192,7 @@ test("comment forbids estimated numbers (M1d deferral)", () => {
   // estimated numbers like token counts or tok/s. The comment should be
   // visible in the source code.
   // Resolved relative to THIS file, never an absolute machine path: the first version
-  // hardcoded /Users/dtd/raziel/... and was red on every CI runner from 2d11f67 onward
+  // hardcoded an absolute machine path and was red on every CI runner from 2d11f67 onward
   // (a target you have not inspected is a guess with a path in it).
   const fs = require("fs");
   const path = require("path");
