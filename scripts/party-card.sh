@@ -19,9 +19,9 @@ cat <<'EOF'
 ║  Scope Restraint ██████████  10/10   ║
 ║      (it ships itself, unattended)   ║
 ║                                      ║
-║  Ward: Agent OS security wall        ║
+║  Ward: security wall (planned)       ║
 ╠══════════════════════════════════════╣
-║  ◇ ACP, not app-per-surface          ║
+║  ◇ ACP surfaces (planned)            ║
 ║  ◇ Logs every event, on purpose      ║
 ║                                      ║
 ║  "one letter from agent to angel"    ║
