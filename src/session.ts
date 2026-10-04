@@ -1,4 +1,4 @@
-import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync } from "node:fs";
+import { appendFileSync, chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve, sep } from "node:path";
 import { isValidEvent, type SessionEvent } from "./events";
@@ -9,7 +9,10 @@ export function razielHome(): string {
 
 function sessionsDir(): string {
   const d = join(razielHome(), "sessions");
-  mkdirSync(d, { recursive: true });
+  // Session logs are plaintext and may hold secrets: owner-only. mkdir's mode is
+  // masked by umask and ignored for existing dirs, so tighten explicitly.
+  mkdirSync(d, { recursive: true, mode: 0o700 });
+  try { chmodSync(d, 0o700); } catch { /* not owner / unsupported fs: best effort */ }
   return d;
 }
 
@@ -41,8 +44,15 @@ export class SessionStore {
     this.path = join(sessionsDir(), `${this.id}.jsonl`);
   }
 
+  private tightened = false;
+
   append(e: SessionEvent): void {
-    appendFileSync(this.path, JSON.stringify(e) + "\n");
+    appendFileSync(this.path, JSON.stringify(e) + "\n", { mode: 0o600 });
+    if (!this.tightened) {
+      // `mode` applies only when the file is created; fix logs written before this.
+      try { chmodSync(this.path, 0o600); } catch { /* best effort */ }
+      this.tightened = true;
+    }
   }
 
   replay(): SessionEvent[] {

@@ -1,5 +1,5 @@
 import { test, expect, beforeEach } from "bun:test";
-import { mkdtempSync, appendFileSync } from "node:fs";
+import { mkdtempSync, appendFileSync, statSync, writeFileSync, chmodSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SessionStore } from "../src/session";
@@ -73,4 +73,24 @@ test("normal ISO-shaped ids and dotted/underscored ids pass", () => {
   expect(() => new SessionStore("2026-01-01T00-00-00Z")).not.toThrow();
   expect(() => new SessionStore("my-session_2")).not.toThrow();
   expect(() => new SessionStore("a.b.c")).not.toThrow();
+});
+
+test("session log is 0600 and the sessions dir is 0700", () => {
+  const s = new SessionStore("perm");
+  s.append(mkEvent("user_message", { text: "secret-ish" }));
+  expect(statSync(s.path).mode & 0o777).toBe(0o600);
+  expect(statSync(join(process.env.RAZIEL_HOME!, "sessions")).mode & 0o777).toBe(0o700);
+});
+
+test("pre-existing loose log and dir are tightened on next use", () => {
+  const dir = join(process.env.RAZIEL_HOME!, "sessions");
+  mkdirSync(dir, { recursive: true });
+  chmodSync(dir, 0o755);
+  const p = join(dir, "old.jsonl");
+  writeFileSync(p, "");
+  chmodSync(p, 0o644);
+  const s = new SessionStore("old");
+  s.append(mkEvent("user_message", { text: "x" }));
+  expect(statSync(dir).mode & 0o777).toBe(0o700);
+  expect(statSync(p).mode & 0o777).toBe(0o600);
 });
