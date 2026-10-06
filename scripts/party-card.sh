@@ -17,11 +17,11 @@ cat <<'EOF'
 ║  Event Log      ██████████  10/10    ║
 ║  Local Models   ████████░░   8/10    ║
 ║  Scope Restraint ██████████  10/10   ║
-║      (it ships itself, unattended)   ║
+║      (pre-alpha, built in public)    ║
 ║                                      ║
-║  Ward: Agent OS security wall        ║
+║  Ward: security wall (planned)       ║
 ╠══════════════════════════════════════╣
-║  ◇ ACP, not app-per-surface          ║
+║  ◇ ACP surfaces (planned)            ║
 ║  ◇ Logs every event, on purpose      ║
 ║                                      ║
 ║  "one letter from agent to angel"    ║

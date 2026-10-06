@@ -1,7 +1,7 @@
 {
   "name": "raziel",
   "version": "0.0.1",
-  "description": "Raziel — a terminal-first AI agent harness. One engine, ACP surfaces, event-sourced sessions.",
+  "description": "Raziel — a terminal-first AI agent harness. Event-sourced sessions, approval-gated tools, local-model support (pre-alpha; ACP planned).",
   "license": "MIT",
   "type": "module",
   "bin": {
