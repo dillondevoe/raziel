@@ -8,7 +8,7 @@
 ║  Event Log      ██████████  10/10    ║
 ║  Local Models   ████████░░   8/10    ║
 ║  Scope Restraint ██████████  10/10   ║
-║      (it ships itself, unattended)   ║
+║      (pre-alpha, built in public)    ║
 ║                                      ║
 ║  Ward: security wall (planned)       ║
 ╠══════════════════════════════════════╣
