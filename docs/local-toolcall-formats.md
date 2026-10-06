@@ -16,8 +16,8 @@ evidence-tiers: >
 
 # 0. Local probe result — NEGATIVE (read this first)
 
-**VERIFIED-LOCAL (negative result).** This machine (`/Users/dtd/jarvis-sync`,
-Dillon's Mac mini) has no `ollama` binary and no local model runner of any kind:
+**VERIFIED-LOCAL (negative result).** This machine (a development machine,
+a Mac mini) has no `ollama` binary and no local model runner of any kind:
 
 ```
 $ which ollama

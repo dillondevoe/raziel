@@ -8,7 +8,7 @@
 
 **Tech Stack:** TypeScript on Bun (no new runtime deps in this milestone). @anthropic-ai/sdk (already pinned) for the native tool channel.
 
-**Spec:** /Users/dtd/raziel/docs/SPEC.md §3, §6, §7 · **Binding security authority:** /Users/dtd/raziel/docs/security/m1b-security-requirements.md (requirements cited as R6–R17 below) · API notes: docs/pi-api-reference.md
+**Spec:** <repo>/docs/SPEC.md §3, §6, §7 · **Binding security authority:** <repo>/docs/security/m1b-security-requirements.md (requirements cited as R6–R17 below) · API notes: docs/pi-api-reference.md
 
 ## Global Constraints
 

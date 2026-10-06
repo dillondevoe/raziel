@@ -1,30 +1,30 @@
 ---
 title: SPEC — Raziel: one engine, ACP surfaces, Air daily-driver + agent-os shell
-author: geist (Air), with Dillon interactive
+author: geist (Air), with the owner interactive
 date: 2026-08-30
-status: SPEC — approved by Dillon 2026-08-30 (design in-session; §8 answered); next: implementation plan
+status: SPEC — approved by the owner 2026-08-30 (design in-session; §8 answered); next: implementation plan
 provenance: dillon (goals, choices) + web (landscape scan, verified 2026-08-30) + inferred (design)
 inputs:
   - Landscape scan (subagent, 2026-08-30): pi/omp, OpenCode, Crush, goose, Aider, Codex CLI,
     Gemini CLI, Hermes-agent, Cline, Qwen Code; SDKs; TUI libs; MCP/ACP/AG-UI; local tool-calling
   - ~/agent-os — bin/agent-loop v0.2 (wall architecture), configuration-open.nix
-  - Dillon leads: omp.sh (oh-my-pi), timtoole02/camelid (Rust local inference)
+  - the owner leads: omp.sh (oh-my-pi), timtoole02/camelid (Rust local inference)
 ---
 
 # 0. What this is
 
-**Raziel** (the angel who keeps the Book of Secrets; also one letter from "agent" to "angel") — Dillon's harness: a terminal-first AI agent he builds and owns — the craft goal is
+**Raziel** (the angel who keeps the Book of Secrets; also one letter from "agent" to "angel") — the owner's harness: a terminal-first AI agent he builds and owns — the craft goal is
 "master harness builder," the product goal is a daily-driver that beats renting someone
 else's harness. **One program, two configurations:**
 
 - **Air daily-driver** (v1): drives any model (Anthropic, ollama, Camelid, Nous, any
-  OpenAI-compatible), edits files, runs commands, approval-gated. Success bar, Dillon's
+  OpenAI-compatible), edits files, runs commands, approval-gated. Success bar, the owner's
   words: *he chooses it over Claude Code for a week of real work.*
 - **agent-os shell** (v1.5): the same binary boots as agent-os's tty1 experience, drives
   the local Qwen, and swaps its hands for agent-os's wall (`mcp parse | broker run`).
   Nothing forked; a config flag chooses hands + model.
 
-Decisions locked in-session (Dillon, 2026-08-30, interactive on Air):
+Decisions locked in-session (the owner, 2026-08-30, interactive on Air):
 identity = **both, staged** · surface = **TUI + local web panel** (panel is v2) ·
 posture = **own the engine, borrow rendering + provider plumbing, adopt open protocols** ·
 success = **daily-driver test** · novelty lanes = **all three** (§5).
@@ -134,14 +134,14 @@ written before each spike — house doctrine)
 - **M0 spike (~days):** engine skeleton + event log + Anthropic provider + bare TUI.
   Proof: a real conversation in it.
 - **M1 daily-driver alpha:** builtins + approvals + session resume + `/model` with
-  ollama + 2 model profiles. Proof: **Dillon uses it a week over Claude Code.**
+  ollama + 2 model profiles. Proof: **the owner uses it a week over Claude Code.**
 - **M1.5 agent-os shell:** walled executor + qwen profile + tty1 config. Proof: the box
   boots into it and feels shockingly good local-first.
 - **M2:** web panel (ACP client #2), lane deep-dives, Zed/Neovim verified free.
 - Every milestone: replay-test suite green (event-log fixtures vs fake provider) + one
   honest lane-1 benchmark. TDD per house workflow.
 
-# 8. Decisions (Dillon, 2026-08-30, interactive)
+# 8. Decisions (the owner, 2026-08-30, interactive)
 
 1. **Name: Raziel.** Binary `raziel`, state dir `~/.raziel/`. Collision sweep 2026-08-30:
    `dillondevoe/raziel` free; brew free; unscoped npm `raziel` squatted by an abandoned
