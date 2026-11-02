@@ -139,6 +139,10 @@ test("runDoctor: ok when any profile is ready, and says how to start", async () 
   expect(r.text).toContain("Start with: bun run src/cli.ts\n");
   const none = await runDoctor([qwen], "sonnet", { env: {}, fetchImpl });
   expect(none.ok).toBe(false);
+  // A model override that made the check pass is carried into the start command.
+  const compat = fetchOf(() => json(200, { data: [{ id: "local-llm" }] }));
+  const custom = await runDoctor([{ ...astra, model: "local-llm" }], "sonnet", { env: { RAZIEL_COMPAT_KEY: "k" }, fetchImpl: compat });
+  expect(custom.text).toContain("Start with: bun run src/cli.ts --profile astra --model local-llm\n");
 });
 
 // --- the real first run, as a subprocess: no key, no ollama, no config ---

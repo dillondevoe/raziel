@@ -1,5 +1,5 @@
 import type { Provider } from "./provider";
-import type { ModelProfile } from "./profiles";
+import { getProfile, type ModelProfile } from "./profiles";
 import { isOAuthToken, OAUTH_REFUSAL } from "./providers/anthropic";
 import { sanitizeForTerminal } from "./term";
 
@@ -149,8 +149,15 @@ export async function runDoctor(profiles: readonly ModelProfile[], defaultId: st
   const checks = await Promise.all(profiles.map((p) => checkProfile(p, opts)));
   const lines = ["raziel doctor: checking each profile with a free listing call (no tokens spent)"];
   for (const c of checks) lines.push(`  ${c.ok ? "ok  " : "FAIL"} ${c.profile.padEnd(12)} ${c.provider.padEnd(17)} ${c.line}`);
-  const ready = checks.filter((c) => c.ok).map((c) => c.profile);
-  if (ready.length === 0) lines.push("No profile is ready yet. Apply one fix above, then run `bun run src/cli.ts doctor` again.");
-  else lines.push(ready.includes(defaultId) ? "Start with: bun run src/cli.ts" : `Start with: bun run src/cli.ts --profile ${ready[0]}`);
-  return { text: sanitizeForTerminal(lines.join("\n")) + "\n", ok: ready.length > 0 };
+  // Carry a --model the caller checked with into the start command; a default-profile, default-model
+  // pick needs no flags at all.
+  const start = profiles.map((p, i) => ({ p, c: checks[i]! })).filter(({ c }) => c.ok)
+    .map(({ p }) => {
+      const model = opts.model ?? p.model;
+      const modelFlag = model !== getProfile(p.id)?.model ? ` --model ${model}` : "";
+      return p.id === defaultId && !modelFlag ? "" : ` --profile ${p.id}${modelFlag}`;
+    });
+  if (start.length === 0) lines.push("No profile is ready yet. Apply one fix above, then run `bun run src/cli.ts doctor` again.");
+  else lines.push(`Start with: bun run src/cli.ts${start.includes("") ? "" : start[0]}`);
+  return { text: sanitizeForTerminal(lines.join("\n")) + "\n", ok: start.length > 0 };
 }
