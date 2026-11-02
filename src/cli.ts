@@ -5,7 +5,8 @@ import { Engine } from "./engine";
 import { SessionStore, razielHome } from "./session";
 import { FakeProvider } from "./providers/fake";
 import { renderBook, listSessions } from "./book";
-import { defaultProfileId, getProfile, type ModelProfile } from "./profiles";
+import { defaultProfileId, getProfile, listProfiles, type ModelProfile } from "./profiles";
+import { runDoctor } from "./doctor";
 import { loadSystemPrompt } from "./system_prompt";
 import { sanitizeForTerminal } from "./term";
 import { providerForOrExit, createModelCommand, createApproveCommand, createScarCommand, createAsk, statusLine } from "./commands";
@@ -91,19 +92,29 @@ async function main(): Promise<void> {
     return;
   }
 
-  const store = openSessionOrExit(arg("--session"));
-
   const profileId = arg("--profile") ?? defaultProfileId();
   const profile = getProfile(profileId);
   if (!profile) {
-    process.stderr.write(`raziel: unknown profile ${JSON.stringify(profileId)}\n`);
+    const ids = listProfiles().map((p) => p.id).join(", ");
+    process.stderr.write(`raziel: unknown profile ${JSON.stringify(profileId)}. Fix: --profile <one of: ${ids}>\n`);
     process.exit(1);
   }
-  // --model is a raw-model override (M0-smoke back-compat), anthropic-only —
-  // --profile wins whenever both are given.
+  // --model overrides the selected profile's model name, for any provider:
+  // a different Anthropic model, another `ollama pull`ed model, or whatever
+  // an OpenAI-compatible server (RAZIEL_COMPAT_URL) serves.
   const modelOverride = arg("--model");
-  const modelIsOverridden = profile.provider === "anthropic" && modelOverride !== undefined;
-  const model = modelIsOverridden ? modelOverride : profile.model;
+  const modelIsOverridden = modelOverride !== undefined;
+  const model = modelOverride ?? profile.model;
+
+  if (process.argv[2] === "doctor") {
+    // `doctor` = every profile; `doctor --profile X [--model Y]` = just that one.
+    const only = arg("--profile") !== undefined ? [{ ...profile, model }] : listProfiles();
+    const r = await runDoctor(only, defaultProfileId());
+    process.stdout.write(r.text);
+    process.exit(r.ok ? 0 : 1);
+  }
+
+  const store = openSessionOrExit(arg("--session"));
 
   const write = (s: string) => process.stdout.write(s);
 
@@ -147,7 +158,7 @@ async function main(): Promise<void> {
   process.on("SIGINT", handleSigint);
 
   if (wantsTui()) {
-    // The raw `--model` override (M0-smoke back-compat, anthropic-only) has
+    // The raw `--model` override has
     // no first-class profile identity of its own — the TUI's /model,
     // /session, /escalate machinery is profile-shaped, so fold the override
     // into a derived profile object (spreading a frozen ModelProfile yields
@@ -175,12 +186,11 @@ async function main(): Promise<void> {
   const toolsFull = { registry: registryFull, ws, approvals };
   const toolsInitial = { registry: sliceTools(registryFull, profile.maxToolSurface), ws, approvals };
 
-  const engine = modelIsOverridden
-    // `system` sits outside the model/profile union: a --model override
-    // changes which model string goes out, not which profile the user
-    // selected, so the selected profile's persona applies to both paths.
-    ? new Engine({ provider, store, model, system: loadSystemPrompt(profile), tools: toolsInitial, maxRounds: launch.maxRounds })
-    : new Engine({ provider, store, profile, system: loadSystemPrompt(profile), tools: toolsInitial, maxRounds: launch.maxRounds });
+  // A --model override keeps the profile's sampling and context budget (an
+  // ollama num_ctx matters) and only swaps the model string; the selected
+  // profile's persona applies either way.
+  const engineProfile: ModelProfile = modelIsOverridden ? { ...profile, model } : profile;
+  const engine = new Engine({ provider, store, profile: engineProfile, system: loadSystemPrompt(profile), tools: toolsInitial, maxRounds: launch.maxRounds });
   const engineBox: { current: Engine } = { current: engine };
 
   if (process.stdout.isTTY) write(SIGIL);
@@ -237,4 +247,17 @@ async function main(): Promise<void> {
   rl.close();
 }
 
-if (import.meta.main) await main();
+/** Last line of defence: an unexpected failure is one `raziel:` line, not a
+ * stack trace. RAZIEL_DEBUG=1 prints the stack for bug reports. */
+export function crashLine(err: unknown, debug: boolean): string {
+  if (debug && err instanceof Error && err.stack) return `raziel: ${err.stack}\n`;
+  const msg = err instanceof Error ? err.message : String(err);
+  return `raziel: ${msg} (set RAZIEL_DEBUG=1 for a stack trace)\n`;
+}
+
+if (import.meta.main) {
+  try { await main(); } catch (err) {
+    process.stderr.write(crashLine(err, process.env.RAZIEL_DEBUG === "1"));
+    process.exit(1);
+  }
+}
