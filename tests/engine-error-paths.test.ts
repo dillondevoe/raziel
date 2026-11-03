@@ -136,7 +136,7 @@ test("fetch passes a body through when the injected fetch answers in time", asyn
 
 test("oversized results are capped at 64,000 chars with a marker: run_command, grep, glob", async () => {
   const ws = mkws();
-  const exec = await runCommandTool.run({ argv: ["printf", "%070000d", "0"] }, ws);
+  const exec = await runCommandTool.run({ argv: [process.execPath, "-e", "process.stdout.write('0'.repeat(70000))"] }, ws);
   expect(exec.output.endsWith("…[truncated]")).toBe(true);
   expect(exec.output.length).toBe(64_000 + "…[truncated]".length);
 
