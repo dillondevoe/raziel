@@ -49,7 +49,7 @@ export const runCommandTool: BuiltinTool = {
       required: ["argv"],
     },
   },
-  async run(args, ws: Workspace) {
+  async run(args, ws: Workspace, signal?: AbortSignal) {
     try {
       if (!isRecord(args) || !Array.isArray(args.argv)) {
         return { ok: false, output: "run_command: args.argv must be an array of strings" };
@@ -68,6 +68,7 @@ export const runCommandTool: BuiltinTool = {
       }
 
       const env = scrubEnv(process.env);
+      if (signal?.aborted) return { ok: false, output: "run_command: interrupted (Ctrl-C) before it started" };
 
       let proc: Bun.Subprocess<"ignore", "pipe", "pipe">;
       try {
@@ -91,6 +92,17 @@ export const runCommandTool: BuiltinTool = {
           // already dead
         }
       }, timeoutMs);
+      // Ctrl-C kills the child now instead of letting it run to the timeout.
+      let interrupted = false;
+      const onAbort = () => {
+        interrupted = true;
+        try {
+          proc.kill();
+        } catch {
+          // already dead
+        }
+      };
+      signal?.addEventListener("abort", onAbort, { once: true });
 
       try {
         const [stdout, stderr, exitCode] = await Promise.all([
@@ -99,12 +111,14 @@ export const runCommandTool: BuiltinTool = {
           proc.exited,
         ]);
         const body = [stdout, stderr].filter((s) => s.length > 0).join("\n");
+        if (interrupted) return { ok: false, output: cap(`run_command: interrupted (Ctrl-C); killed\n${body}`) };
         if (timedOut) return { ok: false, output: cap(`run_command: timed out after ${timeoutMs} ms; killed\n${body}`) };
         return { ok: exitCode === 0, output: cap(`exit ${exitCode}\n${body}`) };
       } catch (e) {
         return { ok: false, output: `run_command: ${errMessage(e)}` };
       } finally {
         clearTimeout(timer);
+        signal?.removeEventListener("abort", onAbort);
       }
     } catch (e) {
       return { ok: false, output: errMessage(e) };

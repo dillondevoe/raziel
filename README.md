@@ -45,7 +45,7 @@ anything you cannot afford to lose.
 - Plain-English errors for the day-one failures (no key, wrong key, provider unreachable, unknown
   model, ollama not running): one line naming the env var, flag or command that fixes it.
 - A terminal UI built on pi-tui (`src/tui`).
-- 495 tests (`bun test`).
+- 504 tests (`bun test`).
 
 **What does not exist yet:**
 - ACP. There is no ACP code in `src/`; the "one engine, many surfaces" design in
@@ -66,7 +66,7 @@ Derived from `src/approvals.ts` (the order of checks), `src/rules.ts` (standing 
 | high | every `run_command`; `fetch` of `localhost` or a private IP | **Never by a standing rule.** Asks; unanswered for 30 s it is denied. Under a grant, only a `run_command` whose argv starts with an `--allow-run` prefix |
 | critical | a path that escapes the workspace, an unknown tool, arguments that are not an object or lack the required `path`/`url` | **Never.** Refused without asking, under any rule or grant |
 
-- **Standing rules** live in `~/.raziel/rules.json`. Answering `a` (always) to a prompt saves one
+- **Standing rules** live in `~/.raziel/rules.json`, written owner-only (`0600`). Answering `a` (always) to a prompt saves one
   for that tool with exactly those arguments; it is not saved if the arguments contain `*`. A rule
   that is only wildcards is refused. `/approve` lists rules and `/approve rm <n>` removes one. A
   rules file that cannot be read or parsed counts as no rules.

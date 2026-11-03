@@ -89,10 +89,13 @@ export const fetchTool: BuiltinTool = {
       required: ["url"],
     },
   },
-  async run(args, _ws: Workspace) {
+  async run(args, _ws: Workspace, turnSignal?: AbortSignal) {
     const timeoutMs = fetchLimits.timeoutMs;
-    const signal = AbortSignal.timeout(timeoutMs);
-    const timedOut = { ok: false, output: `fetch: timed out after ${timeoutMs} ms` };
+    // One signal for the whole call: the timeout, or Ctrl-C on the turn.
+    const signal = turnSignal ? AbortSignal.any([AbortSignal.timeout(timeoutMs), turnSignal]) : AbortSignal.timeout(timeoutMs);
+    const stopped = () => turnSignal?.aborted
+      ? { ok: false, output: "fetch: interrupted (Ctrl-C)" }
+      : { ok: false, output: `fetch: timed out after ${timeoutMs} ms` };
     try {
       if (!isRecord(args) || typeof args.url !== "string") {
         return { ok: false, output: "fetch: args.url must be a string" };
@@ -113,7 +116,7 @@ export const fetchTool: BuiltinTool = {
         try {
           res = await fetch(current.toString(), { redirect: "manual", signal });
         } catch (e) {
-          if (signal.aborted) return timedOut;
+          if (signal.aborted) return stopped();
           return { ok: false, output: `fetch: ${errMessage(e)}` };
         }
 
@@ -145,7 +148,7 @@ export const fetchTool: BuiltinTool = {
         return { ok: res.ok, output: TAINT_PREFIX + cap(text) };
       }
     } catch (e) {
-      if (signal.aborted) return timedOut;
+      if (signal.aborted) return stopped();
       return { ok: false, output: errMessage(e) };
     }
   },

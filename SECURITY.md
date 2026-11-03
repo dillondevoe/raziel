@@ -25,6 +25,10 @@ These logs are **plaintext and unredacted**: terminal control sequences are stri
 output, nothing else is. They may contain API keys, tokens, passwords,
 source code, and personal data that appeared in a file, a command's output, or a prompt.
 
+Standing approval rules (`~/.raziel/rules.json`) are written the same way: the file `0600`, and
+a directory created to hold it `0700` (`src/rules.ts`). An existing directory's mode is left as
+it is.
+
 Treat session logs as sensitive. Do not attach them to issues, commit them, sync them to shared
 storage, or share them without reviewing them first. Delete logs you no longer need. Redaction
 is not implemented.
@@ -45,13 +49,19 @@ start Raziel in. The limits each tool enforces itself:
   working directory must be inside the workspace. **The command itself is not contained**: it runs
   as you and can read or change anything you can. Environment variables named like secrets
   (`*_KEY`, `*_TOKEN`, `*_SECRET`, `*_PASSWORD`, `AWS_*`, `GH_*`, `GITHUB_*`, `OPENAI_*`, `NPM_*`)
-  are removed from its environment. It is killed after 30 seconds; output is capped at 64,000
+  are removed from its environment. It is killed after 30 seconds, or at once when you press
+  Ctrl-C during the turn (the result then says it was interrupted); output is capped at 64,000
   characters.
 - **Network** (`fetch`, `src/tools/fetch.ts`): `http` and `https` only; at most 3 redirects, all
-  same-origin; 30-second timeout; body capped at 64,000 characters and prefixed
+  same-origin; 30-second timeout, and Ctrl-C during the turn aborts it at once; body capped at
+  64,000 characters and prefixed
   `[UNTRUSTED FETCHED CONTENT]`. A URL naming `localhost` or a private, loopback or link-local IP
   address is classed high risk (always asked, never granted). The check reads the URL only: a
   public host name that resolves to a private address is classed as public.
+- **Any tool** (`src/engine_tool_call.ts`): after the tool's own cap, the engine cuts any result
+  longer than 65,000 characters to 64,000 plus `…[truncated]`. The built-in tools' capped output
+  (64,000 characters plus a short marker, prefix or notice) stays under that, so this only bites
+  on a tool that does not cap itself.
 - **Model API keys**: the Anthropic door takes a console API key only; a subscription token
   (`sk-ant-oat…`) is refused when the provider is built (`src/providers/anthropic.ts`).
 

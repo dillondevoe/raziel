@@ -6,7 +6,10 @@ const TRUNC_MARKER = "…[truncated]";
 
 export type BuiltinTool = {
   spec: ToolSpec;
-  run(args: unknown, ws: Workspace): Promise<{ ok: boolean; output: string }>;
+  // `signal` is the turn's AbortSignal (Ctrl-C). A tool that can be stopped
+  // part-way (run_command, fetch) honours it and says it was interrupted; the
+  // file tools finish in milliseconds and ignore it.
+  run(args: unknown, ws: Workspace, signal?: AbortSignal): Promise<{ ok: boolean; output: string }>;
 };
 
 function isRecord(v: unknown): v is Record<string, unknown> {
@@ -31,7 +34,7 @@ export const readFileTool: BuiltinTool = {
       required: ["path"],
     },
   },
-  async run(args, ws) {
+  async run(args, ws, _signal) {
     try {
       if (!isRecord(args) || typeof args.path !== "string") {
         return { ok: false, output: "read_file: args.path must be a string" };
@@ -74,7 +77,7 @@ export const writeFileTool: BuiltinTool = {
       required: ["path", "content"],
     },
   },
-  async run(args, ws) {
+  async run(args, ws, _signal) {
     try {
       if (!isRecord(args) || typeof args.path !== "string") {
         return { ok: false, output: "write_file: args.path must be a string" };
@@ -112,7 +115,7 @@ export const editFileTool: BuiltinTool = {
       required: ["path", "old", "new"],
     },
   },
-  async run(args, ws) {
+  async run(args, ws, _signal) {
     try {
       if (!isRecord(args) || typeof args.path !== "string") {
         return { ok: false, output: "edit_file: args.path must be a string" };

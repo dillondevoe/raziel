@@ -1,4 +1,5 @@
-import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { dirname } from "node:path";
 import { canonicalJson } from "./tools/types";
 
 export type StandingRule = { tool: string; pattern: string };
@@ -91,9 +92,19 @@ export class Rules {
     this.rules.push(rule);
   }
 
+  /** Owner-only, like the session logs: the file is written 0600 (the temp
+   * file is created with that mode and renamed over the old one, so an older
+   * world-readable rules.json is replaced too), and a directory this creates
+   * is 0700. An existing directory's mode is left alone. */
   save(path: string): void {
+    const dir = dirname(path);
+    if (!existsSync(dir)) {
+      mkdirSync(dir, { recursive: true, mode: 0o700 });
+      try { chmodSync(dir, 0o700); } catch { /* best effort, as in src/session.ts */ }
+    }
     const tmp = `${path}.tmp.${process.pid}.${Date.now()}`;
-    writeFileSync(tmp, JSON.stringify(this.rules, null, 2));
+    writeFileSync(tmp, JSON.stringify(this.rules, null, 2), { mode: 0o600 });
+    try { chmodSync(tmp, 0o600); } catch { /* best effort */ }
     renameSync(tmp, path);
   }
 

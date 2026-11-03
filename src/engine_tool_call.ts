@@ -7,6 +7,19 @@ import { riskClassFor } from "./risk";
 import { argsHash } from "./tools/types";
 import { sanitizeForTerminal } from "./term";
 
+// Engine-level backstop on any tool's output, applied after the tool's own cap.
+// Every built-in caps itself at 64,000 chars and may add a short marker, prefix
+// or notice (fetch's taint prefix, grep's file-limit notice), so the backstop
+// only fires past 64,000 + RESULT_SLACK: a built-in result is never re-cut,
+// and a tool that does not cap itself cannot flood the context.
+export const RESULT_CAP = 64_000;
+const RESULT_SLACK = 1_000;
+const TRUNC_MARKER = "…[truncated]";
+
+export function capResult(output: string): string {
+  return output.length > RESULT_CAP + RESULT_SLACK ? output.slice(0, RESULT_CAP) + TRUNC_MARKER : output;
+}
+
 export type ToolDeps = {
   registry: Map<string, BuiltinTool>;
   ws: Workspace;
@@ -35,6 +48,7 @@ async function execute(
   decision: "allow" | "deny",
   decidedHash: string,
   tools: ToolDeps,
+  signal: AbortSignal | undefined,
   reason?: string,
 ): Promise<{ ok: boolean; output: string }> {
   if (decision === "deny") return { ok: false, output: reason ? `denied: ${reason}` : "denied by user" };
@@ -49,9 +63,10 @@ async function execute(
   if (!tool) return { ok: false, output: "unknown tool" };
 
   try {
-    return await tool.run(call.args, tools.ws);
+    const r = await tool.run(call.args, tools.ws, signal);
+    return { ok: r.ok, output: capResult(r.output) };
   } catch (e) {
-    return { ok: false, output: e instanceof Error ? e.message : String(e) };
+    return { ok: false, output: capResult(e instanceof Error ? e.message : String(e)) };
   }
 }
 
@@ -118,7 +133,7 @@ export async function* handleToolCall(
     return { aborted: true };
   }
 
-  const result = await execute(call, decision, decidedHash, tools, reason);
+  const result = await execute(call, decision, decidedHash, tools, signal, reason);
   const tres = toolResult(turn, call.name, call.id, result.ok, result.output, round);
   // The side effect has already happened. Append BEFORE yielding so a consumer that
   // stops at the result cannot skip its record and invite a repeat action on resume.
