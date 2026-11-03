@@ -17,14 +17,43 @@ volunteer-maintained project; there is no guaranteed response time.
 
 ## Session logs are sensitive
 
-Raziel records every event of a session (prompts, model output, tool calls and their results,
-file contents read, command output) to `~/.raziel/sessions/<id>.jsonl` (or under `$RAZIEL_HOME`).
-These logs are **plaintext and unredacted**. They may contain API keys, tokens, passwords,
+Raziel appends each turn of a session (your prompts, the model's replies, every tool call, its
+approval decision and its result, which includes file contents read, command output and fetched
+pages, plus errors and token usage) to `~/.raziel/sessions/<id>.jsonl` (or under `$RAZIEL_HOME`).
+The file is created owner-only (`0600`) in an owner-only (`0700`) directory (`src/session.ts`).
+These logs are **plaintext and unredacted**: terminal control sequences are stripped from tool
+output, nothing else is. They may contain API keys, tokens, passwords,
 source code, and personal data that appeared in a file, a command's output, or a prompt.
 
 Treat session logs as sensitive. Do not attach them to issues, commit them, sync them to shared
 storage, or share them without reviewing them first. Delete logs you no longer need. Redaction
 is not implemented.
+
+## What the tools can reach
+
+Every tool call is risk-classed (`src/risk.ts`) and gated by `src/approvals.ts`; see the README
+section "What Raziel will and will not do without asking". The workspace is the directory you
+start Raziel in. The limits each tool enforces itself:
+
+- **Files** (`read_file`, `write_file`, `edit_file`, `glob`, `grep`; `src/tools/files.ts`,
+  `src/tools/search.ts`): every path must resolve inside the workspace after following symlinks
+  (`src/tools/workspace.ts`); a path that escapes is classed critical and refused without asking.
+  `write_file` will not overwrite an existing file unless the call says `overwrite: true`;
+  `edit_file` replaces exactly one exact match or fails. `grep` reads at most 200 files per call.
+  Results are capped at 64,000 characters.
+- **Commands** (`run_command`, `src/tools/exec.ts`): an argv array, never a shell string; the
+  working directory must be inside the workspace. **The command itself is not contained**: it runs
+  as you and can read or change anything you can. Environment variables named like secrets
+  (`*_KEY`, `*_TOKEN`, `*_SECRET`, `*_PASSWORD`, `AWS_*`, `GH_*`, `GITHUB_*`, `OPENAI_*`, `NPM_*`)
+  are removed from its environment. It is killed after 30 seconds; output is capped at 64,000
+  characters.
+- **Network** (`fetch`, `src/tools/fetch.ts`): `http` and `https` only; at most 3 redirects, all
+  same-origin; 30-second timeout; body capped at 64,000 characters and prefixed
+  `[UNTRUSTED FETCHED CONTENT]`. A URL naming `localhost` or a private, loopback or link-local IP
+  address is classed high risk (always asked, never granted). The check reads the URL only: a
+  public host name that resolves to a private address is classed as public.
+- **Model API keys**: the Anthropic door takes a console API key only; a subscription token
+  (`sk-ant-oat…`) is refused when the provider is built (`src/providers/anthropic.ts`).
 
 ## Risk, warranty, and liability
 

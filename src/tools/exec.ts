@@ -2,7 +2,8 @@ import type { BuiltinTool } from "./files";
 import type { Workspace } from "./workspace";
 
 const OUTPUT_CAP = 64_000;
-const TIMEOUT_MS = 30_000;
+// Mutable only so tests can shorten it; nothing else writes it.
+export const execLimits = { timeoutMs: 30_000 };
 const TRUNC_MARKER = "…[truncated]";
 
 const DROP_EXACT = new Set(["ANTHROPIC_API_KEY", "RAZIEL_COMPAT_KEY"]);
@@ -80,13 +81,16 @@ export const runCommandTool: BuiltinTool = {
         return { ok: false, output: `run_command: ${errMessage(e)}` };
       }
 
+      let timedOut = false;
+      const timeoutMs = execLimits.timeoutMs;
       const timer = setTimeout(() => {
+        timedOut = true;
         try {
           proc.kill();
         } catch {
           // already dead
         }
-      }, TIMEOUT_MS);
+      }, timeoutMs);
 
       try {
         const [stdout, stderr, exitCode] = await Promise.all([
@@ -95,6 +99,7 @@ export const runCommandTool: BuiltinTool = {
           proc.exited,
         ]);
         const body = [stdout, stderr].filter((s) => s.length > 0).join("\n");
+        if (timedOut) return { ok: false, output: cap(`run_command: timed out after ${timeoutMs} ms; killed\n${body}`) };
         return { ok: exitCode === 0, output: cap(`exit ${exitCode}\n${body}`) };
       } catch (e) {
         return { ok: false, output: `run_command: ${errMessage(e)}` };
