@@ -35,9 +35,8 @@ export const OAUTH_REFUSAL =
   "anthropic: this is a Claude subscription token (sk-ant-oat…). Raziel does not accept it — using it " +
   "outside Claude Code requires impersonating Claude Code. Use a console API key (sk-ant-api…) or another provider.";
 
-// On a subscription, 429 is the STEADY STATE near the plan ceiling, not a
-// malfunction — heavy users hit the plan ceiling most weeks — so it must not read like
-// one. The SDK already retries with exponential backoff honouring `retry-after`;
+// 429 is the steady state near an API key's rate limit, not a malfunction,
+// so it must not read like one. The SDK already retries with exponential backoff honouring `retry-after`;
 // adding a second retry layer here would only make the wait longer and less
 // legible. What was missing is that the surfaced error said nothing about which
 // of the two ceilings was hit, or that waiting is the correct response.
@@ -50,7 +49,7 @@ export function asProviderError(err: unknown): Error {
     headers instanceof Headers ? headers.get(n) ?? undefined : (headers as Record<string, string> | undefined)?.[n];
   const retryAfter = get("retry-after");
   return new Error(
-    "anthropic: rate limited (429) — this is your plan's usage ceiling, not a bad credential. " +
+    "anthropic: rate limited (429) — your API key hit its rate limit; this is not a bad credential. " +
       (retryAfter ? `Retry after ${retryAfter}s. ` : "Retry shortly. ") +
       `Original: ${e.message}`,
   );

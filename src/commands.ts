@@ -7,6 +7,7 @@ import { OllamaProvider } from "./providers/ollama";
 import { OpenAICompatProvider } from "./providers/openai_compat";
 import { OpenAIResponsesProvider } from "./providers/openai_responses";
 import type { Provider } from "./provider";
+import { withPlainErrors } from "./doctor";
 import { getProfile, listProfiles, type ModelProfile } from "./profiles";
 import { loadSystemPrompt } from "./system_prompt";
 import { sanitizeForTerminal } from "./term";
@@ -15,12 +16,21 @@ import { sliceTools } from "./tools/registry";
 import type { Rules } from "./rules";
 export { createAsk, type AskDeps } from "./ask";
 
-const MISSING_ANTHROPIC_KEY_MESSAGE = "ANTHROPIC_API_KEY not set (or use RAZIEL_FAKE=1)";
+const MISSING_ANTHROPIC_KEY_MESSAGE =
+  "no Anthropic API key: ANTHROPIC_API_KEY is not set. Fix: export ANTHROPIC_API_KEY=sk-ant-api... " +
+  "(create a key at console.anthropic.com), or run a local model with --profile qwen (needs ollama). " +
+  "Check every provider with: bun run src/cli.ts doctor";
 
 /** Pure factory, one switch per provider kind. `"anthropic"` THROWS (never
  * exits) on a missing key — a `/model` swap must report it and keep the
  * current engine alive; startup fail-fast lives in providerForOrExit below. */
 export function providerFor(p: ModelProfile, fetchImpl?: typeof fetch): Provider {
+  // Every door's turn-time errors (unreachable, bad key, unknown model) come
+  // back as one plain-English line naming the fix (src/doctor.ts).
+  return withPlainErrors(buildProvider(p, fetchImpl), p);
+}
+
+function buildProvider(p: ModelProfile, fetchImpl?: typeof fetch): Provider {
   switch (p.provider) {
     case "anthropic": {
       if (!process.env.ANTHROPIC_API_KEY) throw new Error(MISSING_ANTHROPIC_KEY_MESSAGE);
@@ -32,17 +42,20 @@ export function providerFor(p: ModelProfile, fetchImpl?: typeof fetch): Provider
       // one place a host name ever appears, and it never appears in this repo.
       return new OllamaProvider({ baseUrl: process.env.RAZIEL_OLLAMA_URL ?? p.baseUrl, fetchImpl });
     case "openai-compat": {
-      if (!p.baseUrl) throw new Error(`profile ${p.id} missing baseUrl`);
+      // RAZIEL_COMPAT_URL: point the openai-compat door at your own endpoint
+      // (vLLM, LM Studio, llama.cpp server, ...) without editing the registry.
+      const baseUrl = process.env.RAZIEL_COMPAT_URL ?? p.baseUrl;
+      if (!baseUrl) throw new Error(`profile ${p.id} missing baseUrl`);
       // A profile that names an apiKeyEnv is declaring it needs a key. Refuse
       // here rather than fall through to the provider's keyless placeholder:
       // "not-needed" reaching a keyed endpoint comes back as that endpoint's
       // 401, i.e. a config error wearing an upstream-outage costume, with
       // nothing anywhere naming the variable the user got wrong.
       if (p.apiKeyEnv && !process.env[p.apiKeyEnv]) {
-        throw new Error(`profile ${p.id} requires ${p.apiKeyEnv} to be set`);
+        throw new Error(`profile ${p.id} requires ${p.apiKeyEnv} to be set. Fix: export ${p.apiKeyEnv}=<key for ${baseUrl}> (a keyless local server accepts any value)`);
       }
       const apiKey = p.apiKeyEnv ? process.env[p.apiKeyEnv] : process.env.RAZIEL_COMPAT_KEY;
-      return new OpenAICompatProvider({ baseUrl: p.baseUrl, apiKey });
+      return new OpenAICompatProvider({ baseUrl, apiKey });
     }
     case "openai-responses": {
       // Same two rules as openai-compat and for the same reasons: a baseUrl is
@@ -51,7 +64,7 @@ export function providerFor(p: ModelProfile, fetchImpl?: typeof fetch): Provider
       // the endpoint report our config error as its own 401.
       if (!p.baseUrl) throw new Error(`profile ${p.id} missing baseUrl`);
       if (p.apiKeyEnv && !process.env[p.apiKeyEnv]) {
-        throw new Error(`profile ${p.id} requires ${p.apiKeyEnv} to be set`);
+        throw new Error(`profile ${p.id} requires ${p.apiKeyEnv} to be set. Fix: export ${p.apiKeyEnv}=<key for ${p.baseUrl}>`);
       }
       const apiKey = p.apiKeyEnv ? process.env[p.apiKeyEnv] : process.env.RAZIEL_COMPAT_KEY;
       return new OpenAIResponsesProvider({ baseUrl: p.baseUrl, apiKey });
