@@ -60,6 +60,9 @@ export function buildCard(tool: string, args: unknown, risk: RiskClass, ws: Work
   return sanitizeForTerminal(lines.join("\n"));
 }
 
+export const CRITICAL_REASON =
+  "critical risk, refused without asking (unknown tool, malformed arguments, or a path that escapes the workspace)";
+
 /**
  * Gates every tool call through risk + standing rules + (if needed) an
  * interactive prompt. Order (R14): critical always denies without
@@ -91,11 +94,13 @@ export class ApprovalManager {
     args: unknown,
     risk: RiskClass,
     ws: Workspace,
-  ): Promise<{ decision: "allow" | "deny"; argsHash: string; persistRule?: () => void }> {
+  ): Promise<{ decision: "allow" | "deny"; argsHash: string; persistRule?: () => void; reason?: string }> {
     const hash = argsHash(tool, args);
 
+    // `reason` is set on the denials no human made, so the recorded
+    // tool_result says who refused instead of "denied by user".
     if (risk === "critical") {
-      return { decision: "deny", argsHash: hash };
+      return { decision: "deny", argsHash: hash, reason: CRITICAL_REASON };
     }
 
     if ((risk === "low" || risk === "medium") && this.rules.matches(tool, args)) {
@@ -107,7 +112,7 @@ export class ApprovalManager {
       this.deps.write?.(
         sanitizeForTerminal(`denied: ${tool} (${risk}) is outside grant — ${this.grant.describe()}`) + "\n",
       );
-      return { decision: "deny", argsHash: hash };
+      return { decision: "deny", argsHash: hash, reason: `outside grant (${this.grant.describe()})` };
     }
 
     const card = buildCard(tool, args, risk, ws);
@@ -124,7 +129,7 @@ export class ApprovalManager {
       if (pattern.includes("*")) {
         this.deps.write?.(
           sanitizeForTerminal(
-            "always-rule not saved: args contain '*' (would over-match); add a rule manually with /approve",
+            "always-rule not saved: args contain '*' (would over-match); add one by editing rules.json",
           ) + "\n",
         );
       } else {

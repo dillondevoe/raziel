@@ -35,8 +35,9 @@ async function execute(
   decision: "allow" | "deny",
   decidedHash: string,
   tools: ToolDeps,
+  reason?: string,
 ): Promise<{ ok: boolean; output: string }> {
-  if (decision === "deny") return { ok: false, output: "denied by user" };
+  if (decision === "deny") return { ok: false, output: reason ? `denied: ${reason}` : "denied by user" };
 
   // R10: recompute from the args about to execute — must match what the
   // decision was actually made against.
@@ -94,8 +95,9 @@ export async function* handleToolCall(
   let decision: "allow" | "deny";
   let decidedHash: string;
   let persistRule: (() => void) | undefined;
+  let reason: string | undefined;
   try {
-    ({ decision, argsHash: decidedHash, persistRule } = await tools.approvals.decide(call.name, call.args, risk, tools.ws));
+    ({ decision, argsHash: decidedHash, persistRule, reason } = await tools.approvals.decide(call.name, call.args, risk, tools.ws));
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
     const tres = toolResult(turn, call.name, call.id, false, `approval error: ${message}`, round);
@@ -116,7 +118,7 @@ export async function* handleToolCall(
     return { aborted: true };
   }
 
-  const result = await execute(call, decision, decidedHash, tools);
+  const result = await execute(call, decision, decidedHash, tools, reason);
   const tres = toolResult(turn, call.name, call.id, result.ok, result.output, round);
   // The side effect has already happened. Append BEFORE yielding so a consumer that
   // stops at the result cannot skip its record and invite a repeat action on resume.

@@ -45,7 +45,7 @@ anything you cannot afford to lose.
 - Plain-English errors for the day-one failures (no key, wrong key, provider unreachable, unknown
   model, ollama not running): one line naming the env var, flag or command that fixes it.
 - A terminal UI built on pi-tui (`src/tui`).
-- 480 tests (`bun test`).
+- 495 tests (`bun test`).
 
 **What does not exist yet:**
 - ACP. There is no ACP code in `src/`; the "one engine, many surfaces" design in
@@ -54,9 +54,30 @@ anything you cannot afford to lose.
   grant system only, which is not a sandbox.
 - Session log redaction. Logs are plaintext.
 
+## What Raziel will and will not do without asking
+
+Derived from `src/approvals.ts` (the order of checks), `src/rules.ts` (standing rules) and
+`src/risk.ts` (risk classes). Applies to every tool call the model makes.
+
+| Risk | Which calls | Without asking? |
+|---|---|---|
+| low | `read_file`, `glob`, `grep` inside the workspace | Only if a standing rule matches (or a `read`/`write` grant covers it); otherwise asks |
+| medium | `write_file`, `edit_file` inside the workspace; `fetch` of a public URL | Only if a standing rule matches (or a `write`/`fetch` grant covers it); otherwise asks |
+| high | every `run_command`; `fetch` of `localhost` or a private IP | **Never by a standing rule.** Asks; unanswered for 30 s it is denied. Under a grant, only a `run_command` whose argv starts with an `--allow-run` prefix |
+| critical | a path that escapes the workspace, an unknown tool, arguments that are not an object or lack the required `path`/`url` | **Never.** Refused without asking, under any rule or grant |
+
+- **Standing rules** live in `~/.raziel/rules.json`. Answering `a` (always) to a prompt saves one
+  for that tool with exactly those arguments; it is not saved if the arguments contain `*`. A rule
+  that is only wildcards is refused. `/approve` lists rules and `/approve rm <n>` removes one. A
+  rules file that cannot be read or parsed counts as no rules.
+- **Grants** (`--grant read|write|fetch`, `--allow-run "<argv prefix>"`, `src/grant.ts`) make a run
+  unattended: anything a grant or standing rule does not cover is denied at once, with the reason
+  printed and recorded, and nothing is ever asked. A grant lasts for one launch.
+- Every call and its result, refusals included, is written to the session log.
+
 ## Roadmap
 
-Build order: `raziel acp` (ACP server), log hygiene (permissions, then redaction), v0.1
+Build order: `raziel acp` (ACP server), log redaction (log file permissions are done), v0.1
 packaging, a benchmark, then the walled executor. Details in [docs/SPEC.md](docs/SPEC.md).
 
 Print the card yourself: `bash scripts/party-card.sh`

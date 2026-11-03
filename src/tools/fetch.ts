@@ -5,6 +5,9 @@ const BODY_CAP = 64_000;
 const TRUNC_MARKER = "…[truncated]";
 const TAINT_PREFIX = "[UNTRUSTED FETCHED CONTENT]\n";
 const MAX_REDIRECTS = 3;
+// Whole-call budget (every redirect hop and the body read). Mutable only so
+// tests can shorten it; nothing else writes it.
+export const fetchLimits = { timeoutMs: 30_000 };
 
 function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null;
@@ -87,6 +90,9 @@ export const fetchTool: BuiltinTool = {
     },
   },
   async run(args, _ws: Workspace) {
+    const timeoutMs = fetchLimits.timeoutMs;
+    const signal = AbortSignal.timeout(timeoutMs);
+    const timedOut = { ok: false, output: `fetch: timed out after ${timeoutMs} ms` };
     try {
       if (!isRecord(args) || typeof args.url !== "string") {
         return { ok: false, output: "fetch: args.url must be a string" };
@@ -105,8 +111,9 @@ export const fetchTool: BuiltinTool = {
       for (let redirects = 0; ; redirects++) {
         let res: Response;
         try {
-          res = await fetch(current.toString(), { redirect: "manual" });
+          res = await fetch(current.toString(), { redirect: "manual", signal });
         } catch (e) {
+          if (signal.aborted) return timedOut;
           return { ok: false, output: `fetch: ${errMessage(e)}` };
         }
 
@@ -138,6 +145,7 @@ export const fetchTool: BuiltinTool = {
         return { ok: res.ok, output: TAINT_PREFIX + cap(text) };
       }
     } catch (e) {
+      if (signal.aborted) return timedOut;
       return { ok: false, output: errMessage(e) };
     }
   },

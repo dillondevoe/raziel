@@ -122,6 +122,9 @@ export async function* runToolTurn(opts: RunToolTurnOpts): AsyncGenerator<Engine
       const { aborted } = yield* handleToolCall(call, turn, tools, tryAppend, signal, round);
       if (aborted) { stop = "interrupt"; break; }
     }
+    // An abort that landed while the round's LAST tool was running: without
+    // this, the final round fell through to "tool round limit" and ended "end".
+    if (signal?.aborted) stop = "interrupt";
     if (stop === "interrupt") break;
 
     if (round === maxRounds - 1) {

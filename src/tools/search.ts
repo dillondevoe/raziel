@@ -4,6 +4,12 @@ import type { BuiltinTool } from "./files";
 import type { Workspace } from "./workspace";
 
 const MAX_WALK_FILES = 200;
+const OUTPUT_CAP = 64_000; // same cap as read_file, run_command and fetch
+const TRUNC_MARKER = "…[truncated]";
+
+function cap(text: string): string {
+  return text.length > OUTPUT_CAP ? text.slice(0, OUTPUT_CAP) + TRUNC_MARKER : text;
+}
 
 function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null;
@@ -81,11 +87,13 @@ export const grepTool: BuiltinTool = {
           }
         }
       }
+      // Notices go after the cap so a long match list cannot cut them off.
+      const lines = matches.length > 0 ? [cap(matches.join("\n"))] : [];
       if (files.length > MAX_WALK_FILES) {
-        matches.push(`[truncated: searched ${MAX_WALK_FILES} files; narrow path]`);
+        lines.push(`[truncated: searched ${MAX_WALK_FILES} files; narrow path]`);
       }
-      if (unreadable > 0) matches.push(`[${unreadable} file(s) unreadable, skipped]`);
-      return { ok: true, output: matches.join("\n") };
+      if (unreadable > 0) lines.push(`[${unreadable} file(s) unreadable, skipped]`);
+      return { ok: true, output: lines.join("\n") };
     } catch (e) {
       return { ok: false, output: errMessage(e) };
     }
@@ -120,7 +128,7 @@ export const globTool: BuiltinTool = {
         ws.contain(match);
         results.push(match);
       }
-      return { ok: true, output: results.join("\n") };
+      return { ok: true, output: cap(results.join("\n")) };
     } catch (e) {
       return { ok: false, output: errMessage(e) };
     }
