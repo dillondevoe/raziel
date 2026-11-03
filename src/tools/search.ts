@@ -51,7 +51,7 @@ export const grepTool: BuiltinTool = {
       required: ["pattern"],
     },
   },
-  async run(args, ws) {
+  async run(args, ws, _signal) {
     try {
       if (!isRecord(args) || typeof args.pattern !== "string") {
         return { ok: false, output: "grep: args.pattern must be a string" };
@@ -112,7 +112,7 @@ export const globTool: BuiltinTool = {
       required: ["pattern"],
     },
   },
-  async run(args, ws) {
+  async run(args, ws, _signal) {
     try {
       if (!isRecord(args) || typeof args.pattern !== "string") {
         return { ok: false, output: "glob: args.pattern must be a string" };
